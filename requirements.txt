@@ -1,3 +1,9 @@
-requests
-pandas
-openpyxl
+# 纸质数据转换工具 - 依赖包列表
+
+# 核心依赖（命令行版本必需）
+requests      # HTTP请求，用于调用豆包OCR API
+openpyxl      # Excel文件读写
+
+# GUI版本依赖
+customtkinter # 现代化GUI框架
+Pillow        # 图像处理支持
