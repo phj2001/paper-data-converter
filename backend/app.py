@@ -1,0 +1,344 @@
+"""
+纸质数据转换工具 - 网页版后端服务
+基于 FastAPI 实现
+"""
+
+import os
+import sys
+import uuid
+import asyncio
+from typing import List, Optional
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+# 添加父目录到路径，以便导入核心模块
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from ocr_processor import OCRProcessor
+from table_processor import CSVParser
+from excel_writer import ExcelWriter
+
+
+# ==================== 数据模型 ====================
+
+class ColumnConfig(BaseModel):
+    """列配置模型"""
+    headers: List[str]
+    column_count: int
+
+
+class ProcessRequest(BaseModel):
+    """处理请求模型"""
+    task_id: str
+    column_config: ColumnConfig
+
+
+class TaskStatus(BaseModel):
+    """任务状态模型"""
+    task_id: str
+    status: str  # pending, processing, completed, failed
+    progress: int  # 0-100
+    current_file: Optional[str] = None
+    total_files: int = 0
+    processed_files: int = 0
+    success_count: int = 0
+    fail_count: int = 0
+    message: Optional[str] = None
+    output_file: Optional[str] = None
+
+
+# ==================== 全局状态 ====================
+
+app = FastAPI(
+    title="纸质数据转换服务",
+    description="基于OCR的纸质表格识别与转换API",
+    version="1.0.0"
+)
+
+# 配置CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 生产环境应限制具体域名
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 任务存储
+tasks: dict[str, TaskStatus] = {}
+
+# 配置
+API_KEY = os.environ.get("ARK_API_KEY", "f56d7c74-5e13-4a71-8973-d4cebd7aece1")
+ENDPOINT_ID = os.environ.get("ARK_ENDPOINT_ID", "ep-20260104183112-7c7dt")
+
+# 目录配置
+UPLOAD_DIR = Path("uploads")
+OUTPUT_DIR = Path("outputs")
+UPLOAD_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR.mkdir(exist_ok=True)
+
+
+# ==================== 辅助函数 ====================
+
+def get_image_files(directory: Path) -> List[Path]:
+    """获取目录中的所有图片文件（包括子目录）"""
+    extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
+    files = []
+    # 使用 rglob 递归扫描所有子目录
+    for f in directory.rglob('*'):
+        if f.is_file() and f.suffix.lower() in extensions:
+            files.append(f)
+    return sorted(files)
+
+
+async def process_task(task_id: str, column_headers: List[str]):
+    """后台处理任务"""
+    try:
+        task = tasks[task_id]
+        task.status = "processing"
+
+        # 获取上传的图片
+        task_dir = UPLOAD_DIR / task_id
+        print(f"[DEBUG] task_dir: {task_dir}")
+        print(f"[DEBUG] task_dir exists: {task_dir.exists()}")
+
+        image_files = get_image_files(task_dir)
+        print(f"[DEBUG] Found {len(image_files)} image files")
+
+        if not image_files:
+            task.status = "failed"
+            task.message = "未找到有效的图片文件"
+            print(f"[DEBUG] No image files found in {task_dir}")
+            return
+
+        task.total_files = len(image_files)
+
+        # 创建Excel写入器
+        output_filename = f"{task_id}_output.xlsx"
+        output_path = OUTPUT_DIR / output_filename
+        excel_writer = ExcelWriter(str(output_path), column_headers)
+
+        # 创建OCR处理器
+        ocr_processor = OCRProcessor(API_KEY, ENDPOINT_ID)
+
+        # 处理每张图片
+        for idx, image_path in enumerate(image_files):
+            task.current_file = image_path.name
+            task.progress = int((idx / len(image_files)) * 100)
+
+            try:
+                csv_text = ocr_processor.process_image_with_headers(
+                    str(image_path),
+                    column_headers,
+                    max_retries=3
+                )
+
+                if csv_text:
+                    headers, rows, parse_error = CSVParser.parse(csv_text)
+
+                    if not parse_error and len(headers) == len(column_headers):
+                        excel_writer.add_data(rows, image_path.name)
+                        task.success_count += 1
+                    else:
+                        task.fail_count += 1
+                else:
+                    task.fail_count += 1
+
+            except Exception as e:
+                task.fail_count += 1
+
+            task.processed_files = idx + 1
+            await asyncio.sleep(0.5)  # 限流
+
+        # 保存Excel
+        excel_writer.save()
+        task.output_file = output_filename
+        task.status = "completed"
+        task.progress = 100
+        task.message = f"处理完成：成功 {task.success_count} 张，失败 {task.fail_count} 张"
+
+    except Exception as e:
+        task = tasks[task_id]
+        task.status = "failed"
+        task.message = f"处理失败：{str(e)}"
+
+
+# ==================== API 路由 ====================
+
+@app.get("/")
+async def root():
+    """根路由"""
+    return {
+        "name": "纸质数据转换服务 API",
+        "version": "1.0.0",
+        "status": "running"
+    }
+
+
+@app.post("/api/upload")
+async def upload_files(files: List[UploadFile] = File(...)):
+    """上传图片文件"""
+    if not files:
+        raise HTTPException(status_code=400, detail="没有上传文件")
+
+    # 生成任务ID
+    task_id = str(uuid.uuid4())
+    task_dir = UPLOAD_DIR / task_id
+    task_dir.mkdir(exist_ok=True, parents=True)
+
+    # 保存文件
+    uploaded_files = []
+    for file in files:
+        # 获取纯文件名（去除路径）
+        filename = os.path.basename(file.filename)
+        file_path = task_dir / filename
+
+        # 如果文件名包含路径分隔符，创建子目录
+        if '/' in file.filename or '\\' in file.filename:
+            # 获取相对路径的目录部分
+            relative_dir = os.path.dirname(file.filename)
+            if relative_dir:
+                # 创建子目录
+                subdir = task_dir / relative_dir.replace('\\', '/')
+                subdir.mkdir(exist_ok=True, parents=True)
+                file_path = subdir / filename
+
+        # 写入文件
+        with open(file_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        uploaded_files.append(filename)
+
+    # 创建任务状态
+    tasks[task_id] = TaskStatus(
+        task_id=task_id,
+        status="pending",
+        progress=0,
+        total_files=len(uploaded_files),
+        message=f"已上传 {len(uploaded_files)} 个文件"
+    )
+
+    return {
+        "task_id": task_id,
+        "file_count": len(uploaded_files),
+        "files": uploaded_files
+    }
+
+
+@app.post("/api/process")
+async def start_process(request: ProcessRequest, background_tasks: BackgroundTasks):
+    """开始处理任务"""
+    # 打印请求数据用于调试
+    import json
+    print(f"[DEBUG] Received request: {request.model_dump()}")
+
+    task_id = request.task_id
+
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    task = tasks[task_id]
+    if task.status == "processing":
+        raise HTTPException(status_code=400, detail="任务正在处理中")
+
+    # 添加后台任务
+    background_tasks.add_task(
+        process_task,
+        task_id,
+        request.column_config.headers
+    )
+
+    return {"task_id": task_id, "status": "started"}
+
+
+@app.get("/api/status/{task_id}")
+async def get_status(task_id: str):
+    """获取任务状态"""
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    task = tasks[task_id]
+    return {
+        "task_id": task.task_id,
+        "status": task.status,
+        "progress": task.progress,
+        "current_file": task.current_file,
+        "total_files": task.total_files,
+        "processed_files": task.processed_files,
+        "success_count": task.success_count,
+        "fail_count": task.fail_count,
+        "message": task.message,
+        "output_file": task.output_file
+    }
+
+
+@app.get("/api/download/{task_id}")
+async def download_file(task_id: str):
+    """下载处理结果"""
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    task = tasks[task_id]
+    if task.status != "completed":
+        raise HTTPException(status_code=400, detail="任务未完成")
+
+    if not task.output_file:
+        raise HTTPException(status_code=404, detail="输出文件不存在")
+
+    file_path = OUTPUT_DIR / task.output_file
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="文件已过期或不存在")
+
+    return FileResponse(
+        path=file_path,
+        filename=f"转换结果_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
+@app.get("/api/tasks")
+async def list_tasks():
+    """列出所有任务"""
+    return {
+        "tasks": [
+            {
+                "task_id": t.task_id,
+                "status": t.status,
+                "progress": t.progress,
+                "total_files": t.total_files,
+                "success_count": t.success_count,
+                "fail_count": t.fail_count
+            }
+            for t in tasks.values()
+        ]
+    }
+
+
+@app.delete("/api/tasks/{task_id}")
+async def delete_task(task_id: str):
+    """删除任务及其文件"""
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    # 删除上传的文件
+    task_dir = UPLOAD_DIR / task_id
+    if task_dir.exists():
+        import shutil
+        shutil.rmtree(task_dir)
+
+    # 删除任务记录
+    del tasks[task_id]
+
+    return {"message": "任务已删除"}
+
+
+# ==================== 启动服务 ====================
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
