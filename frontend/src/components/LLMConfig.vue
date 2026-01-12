@@ -223,7 +223,7 @@ const calculateDropdownPosition = (event) => {
   const rect = trigger.getBoundingClientRect()
   return {
     position: 'fixed',
-    top: `${rect.bottom + window.scrollY + 4}px`,
+    top: `${rect.bottom + 4}px`,
     left: `${rect.left}px`,
     width: `${rect.width}px`,
     zIndex: 10001

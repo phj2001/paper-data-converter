@@ -34,7 +34,7 @@
         </div>
         <div class="info-row">
           <span class="info-label">已处理</span>
-          <span class="info-value">{{ taskStatus.processedFiles }}</span>
+          <span class="info-value">{{ taskStatus.processedFiles }}/{{ taskStatus.totalFiles }}</span>
         </div>
         <div class="info-row">
           <span class="info-label">成功</span>
@@ -46,13 +46,29 @@
         </div>
       </div>
 
+      <!-- 成功率 -->
+      <div class="success-rate-section">
+        <div class="rate-info">
+          <span class="rate-label">当前成功率</span>
+          <span class="rate-value" :class="rateClass">{{ successRate }}%</span>
+        </div>
+        <div class="rate-bar">
+          <div
+            class="rate-bar-fill"
+            :class="rateClass"
+            :style="{ width: successRate + '%' }"
+          ></div>
+        </div>
+      </div>
+
       <!-- 当前处理文件 -->
       <div v-if="taskStatus.currentFile && taskStatus.status === 'processing'" class="current-file">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
           <rect width="16" height="16" rx="4" fill="#EEF0F2"/>
           <path d="M4.5 11.5V4.5l3.5 3.5 3.5-3.5v7" stroke="#666" stroke-width="1" stroke-linecap="round"/>
         </svg>
-        <span>正在处理：{{ taskStatus.currentFile }}</span>
+        <span class="current-file-text">正在处理：{{ taskStatus.currentFile }}</span>
+        <span class="current-file-index">({{ taskStatus.processedFiles }}/{{ taskStatus.totalFiles }})</span>
       </div>
     </div>
 
@@ -184,6 +200,20 @@ const statusTitle = computed(() => {
       return '处理中'
   }
 })
+
+// 计算成功率
+const successRate = computed(() => {
+  const processed = props.taskStatus.processedFiles || 0
+  if (processed === 0) return 0
+  return Math.round((props.taskStatus.successCount / processed) * 100)
+})
+
+// 成功率颜色类
+const rateClass = computed(() => {
+  if (successRate.value >= 80) return 'rate-high'
+  if (successRate.value >= 50) return 'rate-medium'
+  return 'rate-low'
+})
 </script>
 
 <style scoped>
@@ -296,11 +326,87 @@ const statusTitle = computed(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 16px;
-  background: rgba(0, 102, 255, 0.05);
+  padding: 14px 18px;
+  background: linear-gradient(135deg, rgba(0, 102, 255, 0.08) 0%, rgba(0, 102, 255, 0.03) 100%);
   border-radius: var(--radius-sm);
   font-size: 14px;
   color: var(--text-primary);
+  border-left: 3px solid var(--primary-color);
+}
+
+.current-file-text {
+  flex: 1;
+  font-weight: 500;
+}
+
+.current-file-index {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: rgba(0, 102, 255, 0.1);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.success-rate-section {
+  margin-bottom: 20px;
+  padding: 16px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+
+.rate-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.rate-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.rate-value {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.rate-value.rate-high {
+  color: var(--success-color);
+}
+
+.rate-value.rate-medium {
+  color: #FFA726;
+}
+
+.rate-value.rate-low {
+  color: var(--error-color);
+}
+
+.rate-bar {
+  height: 8px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.rate-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.5s ease, background-color 0.3s ease;
+}
+
+.rate-bar-fill.rate-high {
+  background: linear-gradient(90deg, #00C853 0%, #69F0AE 100%);
+}
+
+.rate-bar-fill.rate-medium {
+  background: linear-gradient(90deg, #FFA726 0%, #FFD54F 100%);
+}
+
+.rate-bar-fill.rate-low {
+  background: linear-gradient(90deg, #FF5252 0%, #FF8A80 100%);
 }
 
 .card-tip {

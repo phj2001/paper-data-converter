@@ -47,6 +47,18 @@
             <div class="stat-label">总文件</div>
           </div>
         </div>
+
+        <div class="stat-card">
+          <div class="stat-icon" :class="rateIconClass">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+              <path d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div class="stat-info">
+            <div class="stat-value" :class="rateValueClass">{{ successRate }}%</div>
+            <div class="stat-label">成功率</div>
+          </div>
+        </div>
       </div>
 
       <!-- 操作按钮 -->
@@ -204,6 +216,20 @@ const successRate = computed(() => {
   if (props.taskStatus.totalFiles === 0) return 0
   return Math.round((props.taskStatus.successCount / props.taskStatus.totalFiles) * 100)
 })
+
+// 成功率图标颜色类
+const rateIconClass = computed(() => {
+  if (successRate.value >= 80) return 'success'
+  if (successRate.value >= 50) return 'warning'
+  return 'error'
+})
+
+// 成功率数值颜色类
+const rateValueClass = computed(() => {
+  if (successRate.value >= 80) return 'rate-high'
+  if (successRate.value >= 50) return 'rate-medium'
+  return 'rate-low'
+})
 </script>
 
 <style scoped>
@@ -269,9 +295,15 @@ const successRate = computed(() => {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 16px;
   margin-bottom: 32px;
+}
+
+@media (min-width: 768px) {
+  .stats-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
 }
 
 .stat-card {
@@ -308,10 +340,27 @@ const successRate = computed(() => {
   color: var(--primary-color);
 }
 
+.stat-icon.warning {
+  background: rgba(255, 167, 38, 0.1);
+  color: #FFA726;
+}
+
 .stat-value {
   font-size: 24px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.stat-value.rate-high {
+  color: var(--success-color);
+}
+
+.stat-value.rate-medium {
+  color: #FFA726;
+}
+
+.stat-value.rate-low {
+  color: var(--error-color);
 }
 
 .stat-label {
