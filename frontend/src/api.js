@@ -108,3 +108,51 @@ export async function deleteTask(taskId) {
 
   return await response.json()
 }
+
+// ==================== 配置管理 API ====================
+
+/**
+ * 获取所有支持的大模型提供商
+ */
+export async function getProviders() {
+  const response = await fetch(`${API_BASE}/config/providers`)
+
+  if (!response.ok) {
+    throw new Error('获取提供商列表失败')
+  }
+
+  return await response.json()
+}
+
+/**
+ * 获取当前的大模型配置
+ */
+export async function getCurrentConfig() {
+  const response = await fetch(`${API_BASE}/config`)
+
+  if (!response.ok) {
+    throw new Error('获取配置失败')
+  }
+
+  return await response.json()
+}
+
+/**
+ * 更新大模型配置
+ */
+export async function updateConfig(configData) {
+  const response = await fetch(`${API_BASE}/config`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(configData)
+  })
+
+  if (!response.ok) {
+    const error = await safeParseJson(response)
+    throw new Error(error.detail || `保存配置失败 (${response.status})`)
+  }
+
+  return await response.json()
+}

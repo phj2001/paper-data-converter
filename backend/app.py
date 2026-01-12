@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from ocr_processor import OCRProcessor
 from table_processor import CSVParser
 from excel_writer import ExcelWriter
+from llm_config import get_config, LLMConfig, LLMConfigManager
 
 
 # ==================== 数据模型 ====================
@@ -72,10 +73,6 @@ app.add_middleware(
 # 任务存储
 tasks: dict[str, TaskStatus] = {}
 
-# 配置
-API_KEY = os.environ.get("ARK_API_KEY", "f56d7c74-5e13-4a71-8973-d4cebd7aece1")
-ENDPOINT_ID = os.environ.get("ARK_ENDPOINT_ID", "ep-20260104183112-7c7dt")
-
 # 目录配置
 UPLOAD_DIR = Path("uploads")
 OUTPUT_DIR = Path("outputs")
@@ -102,13 +99,19 @@ async def process_task(task_id: str, column_headers: List[str]):
         task = tasks[task_id]
         task.status = "processing"
 
+        # 初始化计数器（确保从0开始）
+        task.success_count = 0
+        task.fail_count = 0
+        task.processed_files = 0
+        print(f"[DEBUG] Initialized counters: success={task.success_count}, fail={task.fail_count}")
+
         # 获取上传的图片
         task_dir = UPLOAD_DIR / task_id
         print(f"[DEBUG] task_dir: {task_dir}")
         print(f"[DEBUG] task_dir exists: {task_dir.exists()}")
 
         image_files = get_image_files(task_dir)
-        print(f"[DEBUG] Found {len(image_files)} image files")
+        print(f"[DEBUG] Found {len(image_files)} image files: {[f.name for f in image_files]}")
 
         if not image_files:
             task.status = "failed"
@@ -123,13 +126,15 @@ async def process_task(task_id: str, column_headers: List[str]):
         output_path = OUTPUT_DIR / output_filename
         excel_writer = ExcelWriter(str(output_path), column_headers)
 
-        # 创建OCR处理器
-        ocr_processor = OCRProcessor(API_KEY, ENDPOINT_ID)
+        # 创建OCR处理器（使用配置管理器）
+        llm_config = get_config()
+        ocr_processor = OCRProcessor(llm_config)
 
         # 处理每张图片
         for idx, image_path in enumerate(image_files):
             task.current_file = image_path.name
             task.progress = int((idx / len(image_files)) * 100)
+            print(f"[DEBUG] Processing {idx+1}/{len(image_files)}: {image_path.name}")
 
             try:
                 csv_text = ocr_processor.process_image_with_headers(
@@ -144,15 +149,20 @@ async def process_task(task_id: str, column_headers: List[str]):
                     if not parse_error and len(headers) == len(column_headers):
                         excel_writer.add_data(rows, image_path.name)
                         task.success_count += 1
+                        print(f"[DEBUG] Success: {image_path.name} (total success: {task.success_count})")
                     else:
                         task.fail_count += 1
+                        print(f"[DEBUG] Failed (parse error or column mismatch): {image_path.name} (total fail: {task.fail_count})")
                 else:
                     task.fail_count += 1
+                    print(f"[DEBUG] Failed (no csv_text): {image_path.name} (total fail: {task.fail_count})")
 
             except Exception as e:
                 task.fail_count += 1
+                print(f"[DEBUG] Failed (exception): {image_path.name} - {str(e)} (total fail: {task.fail_count})")
 
             task.processed_files = idx + 1
+            print(f"[DEBUG] After processing {image_path.name}: success={task.success_count}, fail={task.fail_count}, processed={task.processed_files}")
             await asyncio.sleep(0.5)  # 限流
 
         # 保存Excel
@@ -161,11 +171,13 @@ async def process_task(task_id: str, column_headers: List[str]):
         task.status = "completed"
         task.progress = 100
         task.message = f"处理完成：成功 {task.success_count} 张，失败 {task.fail_count} 张"
+        print(f"[DEBUG] Final: success={task.success_count}, fail={task.fail_count}, total={task.total_files}")
 
     except Exception as e:
         task = tasks[task_id]
         task.status = "failed"
         task.message = f"处理失败：{str(e)}"
+        print(f"[DEBUG] Outer exception: {str(e)}")
 
 
 # ==================== API 路由 ====================
@@ -220,6 +232,9 @@ async def upload_files(files: List[UploadFile] = File(...)):
         status="pending",
         progress=0,
         total_files=len(uploaded_files),
+        processed_files=0,
+        success_count=0,
+        fail_count=0,
         message=f"已上传 {len(uploaded_files)} 个文件"
     )
 
@@ -335,6 +350,68 @@ async def delete_task(task_id: str):
     del tasks[task_id]
 
     return {"message": "任务已删除"}
+
+
+# ==================== 配置管理 API ====================
+
+@app.get("/api/config/providers")
+async def get_providers():
+    """获取所有支持的大模型提供商"""
+    return {"providers": LLMConfigManager.list_providers()}
+
+
+@app.get("/api/config")
+async def get_current_config():
+    """获取当前的大模型配置（不包含敏感信息）"""
+    config = get_config()
+    return {
+        "provider": config.provider,
+        "model": config.model,
+        "api_key": "***" if config.api_key else "",  # 隐藏API密钥
+        "base_url": config.base_url,
+        "temperature": config.temperature,
+        "max_tokens": config.max_tokens,
+        "timeout": config.timeout
+    }
+
+
+@app.post("/api/config")
+async def update_llm_config(config_data: dict):
+    """更新大模型配置"""
+    try:
+        # 创建新的配置对象
+        new_config = LLMConfig(
+            provider=config_data.get("provider", "doubao"),
+            model=config_data.get("model", ""),
+            api_key=config_data.get("api_key", ""),
+            base_url=config_data.get("base_url"),
+            temperature=config_data.get("temperature", 0.01),
+            max_tokens=config_data.get("max_tokens", 4096),
+            timeout=config_data.get("timeout", 180)
+        )
+
+        # 验证配置
+        is_valid, error_msg = new_config.validate()
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=error_msg)
+
+        # 保存配置
+        manager = LLMConfigManager()
+        success = manager.save_config(new_config)
+
+        if not success:
+            raise HTTPException(status_code=500, detail="保存配置失败")
+
+        return {
+            "message": "配置已保存",
+            "provider": new_config.provider,
+            "model": new_config.model
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"配置无效: {str(e)}")
 
 
 # ==================== 启动服务 ====================

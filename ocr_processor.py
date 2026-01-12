@@ -1,5 +1,6 @@
 """
-OCR处理器 - 负责与豆包API交互
+OCR处理器 - 负责与大模型API交互
+支持多种主流大模型的统一调用接口
 提供增强的识别能力和多重重试机制
 """
 
@@ -11,7 +12,7 @@ from table_processor import TableData, CSVParser, TableStructureAnalyzer
 
 
 class OCRProcessor:
-    """豆包OCR处理器"""
+    """OCR处理器 - 统一的大模型调用接口"""
 
     # 系统提示词 - 专业的表格识别指令
     SYSTEM_PROMPT = """你是专业的纸质表格识别专家。
@@ -48,10 +49,21 @@ class OCRProcessor:
 - 所有行必须有相同的列数
 - 纯CSV文本，无其他内容"""
 
-    def __init__(self, api_key: str, endpoint_id: str):
-        self.api_key = api_key
-        self.endpoint_id = endpoint_id
-        self.api_url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+    def __init__(self, config):
+        """
+        初始化OCR处理器
+
+        Args:
+            config: LLMConfig配置对象（来自llm_config模块）
+        """
+        self.config = config
+        self.api_key = config.api_key
+        self.model = config.model
+        self.api_url = config.get_api_url()
+        self.provider = config.provider
+        self.temperature = config.temperature
+        self.max_tokens = config.max_tokens
+        self.timeout = config.timeout
 
     def _get_mime_type(self, image_path: str) -> str:
         """根据文件扩展名获取MIME类型"""
@@ -92,9 +104,91 @@ class OCRProcessor:
 
         return base_prompt
 
+    def _build_payload_openai(self, user_prompt: str, base64_image: str, mime_type: str) -> dict:
+        """构建OpenAI兼容格式的payload"""
+        return {
+            "model": self.model,
+            "temperature": self.temperature,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": self.SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime_type};base64,{base64_image}"}
+                        }
+                    ]
+                }
+            ],
+            "max_tokens": self.max_tokens
+        }
+
+    def _build_payload_anthropic(self, user_prompt: str, base64_image: str, mime_type: str) -> dict:
+        """构建Anthropic格式的payload"""
+        return {
+            "model": self.model,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "system": self.SYSTEM_PROMPT,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": mime_type,
+                                "data": base64_image
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+    def _get_headers(self) -> dict:
+        """根据不同提供商获取请求头"""
+        headers = {"Content-Type": "application/json"}
+
+        if self.provider == "anthropic":
+            headers["x-api-key"] = self.api_key
+            headers["anthropic-version"] = "2023-06-01"
+        else:
+            # OpenAI兼容格式（豆包、通义千问、智谱等）
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        return headers
+
+    def _parse_response(self, response_data: dict) -> Tuple[bool, str]:
+        """根据不同提供商解析响应"""
+        try:
+            if self.provider == "anthropic":
+                # Anthropic格式
+                if 'content' in response_data and len(response_data['content']) > 0:
+                    content = response_data['content'][0].get('text', '')
+                    return True, content
+                else:
+                    return False, f"API返回结构异常: {response_data}"
+            else:
+                # OpenAI兼容格式
+                if 'choices' in response_data and len(response_data['choices']) > 0:
+                    content = response_data['choices'][0]['message']['content']
+                    return True, content
+                else:
+                    return False, f"API返回结构异常: {response_data}"
+        except Exception as e:
+            return False, f"解析响应失败: {str(e)}"
+
     def _call_api(self, image_path: str, user_prompt: str) -> Tuple[bool, str]:
         """
-        调用豆包API
+        调用大模型API（支持多种提供商）
 
         返回: (success, response_content)
         """
@@ -102,57 +196,30 @@ class OCRProcessor:
             base64_image = self._encode_image(image_path)
             mime_type = self._get_mime_type(image_path)
 
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}"
-            }
+            headers = self._get_headers()
 
-            payload = {
-                "model": self.endpoint_id,
-                "temperature": 0.01,  # 最低随机性
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": self.SYSTEM_PROMPT
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": user_prompt
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{mime_type};base64,{base64_image}"
-                                }
-                            }
-                        ]
-                    }
-                ],
-                "max_tokens": 4096
-            }
+            # 根据提供商构建不同的payload
+            if self.provider == "anthropic":
+                payload = self._build_payload_anthropic(user_prompt, base64_image, mime_type)
+            else:
+                # OpenAI兼容格式
+                payload = self._build_payload_openai(user_prompt, base64_image, mime_type)
 
             response = requests.post(
                 self.api_url,
                 headers=headers,
                 json=payload,
-                timeout=180  # 3分钟超时
+                timeout=self.timeout
             )
 
             if response.status_code == 200:
                 result = response.json()
-                if 'choices' in result and len(result['choices']) > 0:
-                    content = result['choices'][0]['message']['content']
-                    return True, content
-                else:
-                    return False, f"API返回结构异常: {result}"
+                return self._parse_response(result)
             else:
                 return False, f"HTTP {response.status_code}: {response.text}"
 
         except requests.exceptions.Timeout:
-            return False, "请求超时（180秒）"
+            return False, f"请求超时（{self.timeout}秒）"
         except Exception as e:
             return False, f"异常: {str(e)}"
 
