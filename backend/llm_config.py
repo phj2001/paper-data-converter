@@ -150,8 +150,8 @@ class LLMConfigManager:
             config_file: 配置文件路径，默认为 backend/config.json
         """
         if config_file is None:
-            # 默认配置文件路径
-            self.config_file = Path(__file__).parent / "config.json"
+            # 默认配置文件路径 - 使用项目根目录的config.json
+            self.config_file = Path(__file__).parent.parent / "config.json"
         else:
             self.config_file = Path(config_file)
 
@@ -197,7 +197,9 @@ class LLMConfigManager:
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(config.to_dict(), f, ensure_ascii=False, indent=2)
 
+            # 更新当前配置（如果是全局单例，会自动更新全局状态）
             self.config = config
+
             return True
         except Exception as e:
             print(f"保存配置文件失败: {e}")

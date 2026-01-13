@@ -48,8 +48,17 @@
           <label class="form-label">
             {{ useEndpointId ? 'Endpoint ID' : '模型名称' }}
           </label>
-          <!-- 如果有预定义模型且不使用endpoint，显示下拉 -->
-          <div v-if="availableModels.length > 0 && !useEndpointId" class="custom-select-wrapper">
+
+          <!-- 自定义输入复选框（仅当有预定义模型时显示） -->
+          <div v-if="availableModels.length > 0 && !useEndpointId" class="custom-model-toggle">
+            <label class="checkbox-label">
+              <input type="checkbox" v-model="useCustomModel" />
+              <span>自定义输入模型名称</span>
+            </label>
+          </div>
+
+          <!-- 如果有预定义模型、不使用endpoint、且未勾选自定义，显示下拉 -->
+          <div v-if="availableModels.length > 0 && !useEndpointId && !useCustomModel" class="custom-select-wrapper">
             <div class="select-trigger" @click.stop="toggleModelDropdown">
               <span>{{ config.model || '请选择模型' }}</span>
               <svg class="arrow" :class="{ open: showModelDropdown }" width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -76,7 +85,7 @@
             v-model="config.model"
             type="text"
             class="form-input"
-            :placeholder="useEndpointId ? '请输入 Endpoint ID' : '请输入模型名称'"
+            :placeholder="useEndpointId ? '请输入 Endpoint ID' : '请输入模型名称（如：gpt-4o、claude-3-5-sonnet-20241022 等）'"
           />
         </div>
 
@@ -88,11 +97,18 @@
               v-model="config.api_key"
               :type="showApiKey ? 'text' : 'password'"
               class="form-input"
-              placeholder="请输入 API Key"
+              :placeholder="hasApiKey ? '已配置（留空保持不变）' : '请输入 API Key'"
             />
             <button class="toggle-btn" @click="showApiKey = !showApiKey" type="button">
               {{ showApiKey ? '隐藏' : '显示' }}
             </button>
+          </div>
+          <div v-if="hasApiKey && !config.api_key" class="api-key-hint">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M7 4v3M7 9v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <span>API Key已配置，留空将保持现有配置不变</span>
           </div>
         </div>
 
@@ -162,6 +178,9 @@ const showProviderDropdown = ref(false)
 const showModelDropdown = ref(false)
 const providerDropdownPosition = ref({})
 const modelDropdownPosition = ref({})
+const useCustomModel = ref(false) // 是否使用自定义模型名称
+const hasApiKey = ref(false) // 原始配置中是否有API key
+const originalApiKey = ref('') // 保存原始API key用于比对
 
 // 配置数据
 const config = reactive({
@@ -208,8 +227,33 @@ const loadProviders = async () => {
 const loadCurrentConfig = async () => {
   try {
     const data = await getCurrentConfig()
-    Object.assign(config, data)
+
+    // 逐个赋值确保 reactive 对象正确更新
+    config.provider = data.provider || 'doubao'
+    config.model = data.model || ''
+    config.api_key = data.api_key || ''
+    config.base_url = data.base_url || ''
+    config.temperature = data.temperature ?? 0.01
+    config.max_tokens = data.max_tokens ?? 4096
+    config.timeout = data.timeout ?? 180
+
     console.log('当前配置:', config)
+    console.log('配置提供商:', config.provider)
+    console.log('配置模型:', config.model)
+
+    // 保存原始API key状态
+    hasApiKey.value = data.has_api_key || false
+    originalApiKey.value = data.api_key || ''
+
+    // 等待 providers 加载完成后再判断是否使用自定义模型
+    await nextTick()
+    const providerModels = availableModels.value || []
+    // 如果当前模型不在预定义列表中，且不是使用 endpoint_id 的情况，自动勾选自定义输入
+    if (providerModels.length > 0 && config.model && !providerModels.includes(config.model)) {
+      useCustomModel.value = true
+    } else {
+      useCustomModel.value = false
+    }
   } catch (error) {
     console.error('加载配置失败:', error)
   }
@@ -267,6 +311,8 @@ const selectProvider = (provider) => {
   if (!provider.supports_vision) return
   config.provider = provider.id
   config.model = ''
+  config.api_key = ''  // 清空API key输入
+  hasApiKey.value = false  // 重置已配置状态
   if (provider.id !== 'custom') {
     config.base_url = ''
   }
@@ -289,15 +335,32 @@ const saveConfig = async () => {
     alert('请输入模型名称')
     return
   }
-  if (!config.api_key) {
-    alert('请输入 API Key')
-    return
+
+  // 准备要保存的配置数据
+  const configToSave = { ...config }
+
+  // 处理API Key：
+  // 1. 如果用户输入了新的API key，使用新的
+  // 2. 如果用户没有输入（为空），但原始有API key，则保持原key不变
+  // 3. 如果原始也没有API key，则报错
+  if (!configToSave.api_key) {
+    if (hasApiKey.value) {
+      // 用户没有修改API key，保持原值
+      configToSave.keep_api_key = true
+    } else {
+      alert('请输入 API Key')
+      return
+    }
   }
 
   isSaving.value = true
   try {
-    await updateConfig(config)
+    await updateConfig(configToSave)
     alert('配置保存成功！')
+
+    // 保存成功后，重新加载配置以确保前端显示与后端一致
+    await loadCurrentConfig()
+
     emit('saved')
     emit('close')
   } catch (error) {
@@ -395,6 +458,31 @@ onUnmounted(() => {
   position: relative;
 }
 
+.custom-model-toggle {
+  margin-bottom: 10px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--primary-color);
+}
+
+.checkbox-label:hover {
+  color: var(--text-primary);
+}
+
 .form-label {
   display: block;
   font-size: 14px;
@@ -483,6 +571,20 @@ onUnmounted(() => {
 .toggle-btn:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
+}
+
+.api-key-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.api-key-hint svg {
+  flex-shrink: 0;
+  color: var(--primary-color);
 }
 
 .advanced-settings {

@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from ocr_processor import OCRProcessor
 from table_processor import CSVParser
 from excel_writer import ExcelWriter
-from llm_config import get_config, LLMConfig, LLMConfigManager
+from llm_config import get_config, LLMConfig, LLMConfigManager, get_config_manager
 
 
 # ==================== 数据模型 ====================
@@ -367,7 +367,8 @@ async def get_current_config():
     return {
         "provider": config.provider,
         "model": config.model,
-        "api_key": "***" if config.api_key else "",  # 隐藏API密钥
+        "api_key": "",  # 前端不显示真实的API密钥，始终返回空字符串
+        "has_api_key": bool(config.api_key),  # 标记是否已配置API密钥
         "base_url": config.base_url,
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
@@ -379,11 +380,23 @@ async def get_current_config():
 async def update_llm_config(config_data: dict):
     """更新大模型配置"""
     try:
+        # 使用全局单例获取当前配置
+        manager = get_config_manager()
+        current_config = manager.get_config()
+
+        # 处理API密钥：如果前端传入的api_key为空且指定了keep_api_key，则保持原密钥不变
+        api_key = config_data.get("api_key", "")
+        keep_api_key = config_data.get("keep_api_key", False)
+
+        if keep_api_key and not api_key:
+            # 保持原API密钥
+            api_key = current_config.api_key
+
         # 创建新的配置对象
         new_config = LLMConfig(
             provider=config_data.get("provider", "doubao"),
             model=config_data.get("model", ""),
-            api_key=config_data.get("api_key", ""),
+            api_key=api_key,
             base_url=config_data.get("base_url"),
             temperature=config_data.get("temperature", 0.01),
             max_tokens=config_data.get("max_tokens", 4096),
@@ -395,8 +408,7 @@ async def update_llm_config(config_data: dict):
         if not is_valid:
             raise HTTPException(status_code=400, detail=error_msg)
 
-        # 保存配置
-        manager = LLMConfigManager()
+        # 保存配置（使用全局单例，确保全局状态同步）
         success = manager.save_config(new_config)
 
         if not success:
@@ -405,7 +417,8 @@ async def update_llm_config(config_data: dict):
         return {
             "message": "配置已保存",
             "provider": new_config.provider,
-            "model": new_config.model
+            "model": new_config.model,
+            "has_api_key": bool(new_config.api_key)
         }
 
     except HTTPException:

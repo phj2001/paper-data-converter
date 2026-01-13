@@ -1,0 +1,9 @@
+{
+  "provider": "doubao",
+  "model": "ep-20260113155201-n9nzl",
+  "api_key": "bc4e3372-acfe-4d8b-b1bc-7cda01e2e322",
+  "base_url": "",
+  "temperature": 0.01,
+  "max_tokens": 4096,
+  "timeout": 180
+}
