@@ -33,10 +33,14 @@ yarn-error.log*
 frontend/dist/
 frontend/.vite/
 
-# 环境变量
+# 环境变量（包含敏感信息）
 .env
 .env.local
 .env.*.local
+
+# 配置文件（包含API密钥等敏感信息）
+config.json
+config.local.json
 
 # IDE
 .vscode/
