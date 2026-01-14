@@ -224,8 +224,8 @@ class LLMConfigManager:
         # 根据提供商获取对应的API密钥
         api_key = ""
         if provider == "doubao":
-            api_key = os.environ.get("ARK_API_KEY", "f56d7c74-5e13-4a71-8973-d4cebd7aece1")
-            model = os.environ.get("ARK_ENDPOINT_ID", "ep-20260104183112-7c7dt")
+            api_key = os.environ.get("ARK_API_KEY", "")
+            model = os.environ.get("ARK_ENDPOINT_ID", "")
         elif provider == "openai":
             api_key = os.environ.get("OPENAI_API_KEY", "")
             model = os.environ.get("OPENAI_MODEL", "gpt-4o")
