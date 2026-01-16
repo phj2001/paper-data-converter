@@ -9,9 +9,19 @@
               <rect width="32" height="32" rx="8" fill="#0066FF"/>
               <path d="M9 10h14v2H9v-2zm0 5h14v2H9v-2zm0 5h10v2H9v-2z" fill="white"/>
             </svg>
-            <h1>纸质数据转换工具</h1>
+            <div class="logo-text">
+              <h1>纸质数据转换工具</h1>
+              <p class="logo-subtitle">将纸质表格快速变成可用数据</p>
+            </div>
           </div>
           <div class="header-meta">
+            <button class="config-btn" @click="showTrial = true" title="试运行">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <rect x="3" y="3" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M6 7h8M6 10h8M6 13h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              <span>试运行</span>
+            </button>
             <button class="config-btn" @click="showConfig = true" title="模型配置">
               <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
                 <path d="M10 5a2 2 0 114 0 2 2 0 01-4 0zM10 12a2 2 0 114 0 2 2 0 01-4 0zM10 19a2 2 0 114 0 2 2 0 01-4 0z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -52,6 +62,7 @@
         <div v-if="currentStep === 1" class="fade-in">
           <ColumnConfig
             :is-processing="isProcessing"
+            :suggested-headers="trialHeaders"
             @configure="handleConfigure"
             @back="currentStep = 0"
           />
@@ -80,11 +91,13 @@
     <footer class="footer">
       <div class="container">
         <p>基于大模型API · 表格智能识别</p>
+        <p class="footer-copy">© 清忧@凡辰</p>
       </div>
     </footer>
 
     <!-- 配置弹窗 -->
     <LLMConfig v-if="showConfig" @close="showConfig = false" @saved="onConfigSaved" />
+    <TrialRun v-if="showTrial" @close="showTrial = false" @apply="handleTrialApply" />
   </div>
 </template>
 
@@ -95,6 +108,7 @@ import ColumnConfig from './components/ColumnConfig.vue'
 import ProcessProgress from './components/ProcessProgress.vue'
 import CompletionView from './components/CompletionView.vue'
 import LLMConfig from './components/LLMConfig.vue'
+import TrialRun from './components/TrialRun.vue'
 import { uploadFiles, startProcess, getStatus } from './api'
 
 // 步骤定义
@@ -105,6 +119,10 @@ const currentStep = ref(0)
 
 // 配置弹窗状态
 const showConfig = ref(false)
+const showTrial = ref(false)
+
+const trialProfileId = ref(null)
+const trialHeaders = ref([])
 
 // 状态
 const isUploading = ref(false)
@@ -137,7 +155,9 @@ const handleUpload = async (files) => {
 }
 
 // 处理列配置
-const handleConfigure = async (headers) => {
+const handleConfigure = async (payload) => {
+  const headers = Array.isArray(payload) ? payload : payload.headers
+  const useTrialProfile = !Array.isArray(payload) && payload.useTrialProfile
   isProcessing.value = true
   currentStep.value = 2
 
@@ -147,7 +167,8 @@ const handleConfigure = async (headers) => {
       column_config: {
         headers: headers,
         column_count: headers.length
-      }
+      },
+      prompt_profile_id: useTrialProfile ? trialProfileId.value : null
     })
 
     // 开始轮询状态
@@ -228,6 +249,12 @@ const onConfigSaved = () => {
   // 可以在这里添加配置保存后的处理逻辑
   console.log('配置已保存')
 }
+
+const handleTrialApply = (payload) => {
+  trialProfileId.value = payload.profile_id
+  trialHeaders.value = payload.headers || []
+  showTrial.value = false
+}
 </script>
 
 <style scoped>
@@ -238,9 +265,10 @@ const onConfigSaved = () => {
 }
 
 .header {
-  background: white;
-  border-bottom: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.9);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   padding: 20px 0;
+  backdrop-filter: blur(6px);
 }
 
 .header-content {
@@ -255,10 +283,21 @@ const onConfigSaved = () => {
   gap: 12px;
 }
 
+.logo-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .logo h1 {
   font-size: 20px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.logo-subtitle {
+  font-size: 13px;
+  color: var(--text-tertiary);
 }
 
 .header-meta {
@@ -289,7 +328,7 @@ const onConfigSaved = () => {
 
 .main {
   flex: 1;
-  padding: 40px 0;
+  padding: 32px 0 50px;
 }
 
 .steps {
@@ -303,6 +342,10 @@ const onConfigSaved = () => {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(0, 0, 0, 0.04);
 }
 
 .step-number {
@@ -341,16 +384,23 @@ const onConfigSaved = () => {
 }
 
 .footer {
-  background: white;
-  border-top: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.9);
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
   padding: 20px 0;
   margin-top: auto;
+  backdrop-filter: blur(6px);
 }
 
 .footer p {
   text-align: center;
   color: var(--text-secondary);
   font-size: 14px;
+}
+
+.footer-copy {
+  margin-top: 6px;
+  color: var(--text-tertiary);
+  font-size: 12px;
 }
 
 .fade-in {

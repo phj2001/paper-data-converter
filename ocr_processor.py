@@ -5,10 +5,45 @@ OCR处理器 - 负责与大模型API交互
 """
 
 import os
+import json
 import base64
 import requests
+from dataclasses import dataclass, asdict
 from typing import Optional, Tuple, List
 from table_processor import TableData, CSVParser, TableStructureAnalyzer
+
+
+@dataclass
+class PromptProfile:
+    """Prompt profile derived from a trial image."""
+    headers: List[str]
+    column_count: int
+    column_notes: List[str]
+    row_rules: List[str]
+    output_rules: List[str]
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PromptProfile":
+        return cls(
+            headers=data.get("headers", []),
+            column_count=int(data.get("column_count", 0)),
+            column_notes=data.get("column_notes", []),
+            row_rules=data.get("row_rules", []),
+            output_rules=data.get("output_rules", []),
+        )
+
+
+PROFILE_SYSTEM_PROMPT = """ä½ æ˜¯ä¸“ä¸šçš„çº¸è´¨è¡¨æ ¼ç»“æž„åˆ†æžä¸“å®¶ã€?
+ä»»åŠ¡ï¼šåˆ†æžå›¾ç‰‡ä¸­çš„ä¸»è¡¨æ ¼ç»“æž„ï¼Œè¿”å›žä¸¥æ ¼JSONã€‚
+è¦æ±‚ï¼š
+1. åªè¿”å›žJSONï¼Œä¸è¦Markdownï¼Œä¸è¦è§£é‡Šå­—ç¬¦ä¸²ã€‚
+2. JSONå¿…é¡»åŒ…å« keys: headers, column_count, column_notes, row_rules, output_rulesã€‚
+3. headersä¸ºä»Žå·¦åˆ°å³çš„åˆ—æ ‡é¢˜æ•°ç»„ï¼Œcolumn_countç­‰äºŽheadersé•¿åº¦ã€‚
+4. column_notesä¸ºæ•°ç»„ï¼Œæ ¼å¼ï¼š\"åˆ—å: è¯´æ˜Ž\"ã€‚
+5. row_rules/ output_rulesä¸ºæ•°ç»„ï¼Œç®€æ´ç›´è§‚ï¼Œä¸åšæŽ¨æ–­ã€‚"""
 
 
 class OCRProcessor:
@@ -104,15 +139,17 @@ class OCRProcessor:
 
         return base_prompt
 
-    def _build_payload_openai(self, user_prompt: str, base64_image: str, mime_type: str) -> dict:
+    def _build_payload_openai(self, user_prompt: str, base64_image: str, mime_type: str,
+                              system_prompt: Optional[str] = None) -> dict:
         """构建OpenAI兼容格式的payload"""
+        active_system_prompt = system_prompt or self.SYSTEM_PROMPT
         return {
             "model": self.model,
             "temperature": self.temperature,
             "messages": [
                 {
                     "role": "system",
-                    "content": self.SYSTEM_PROMPT
+                    "content": active_system_prompt
                 },
                 {
                     "role": "user",
@@ -128,13 +165,15 @@ class OCRProcessor:
             "max_tokens": self.max_tokens
         }
 
-    def _build_payload_anthropic(self, user_prompt: str, base64_image: str, mime_type: str) -> dict:
+    def _build_payload_anthropic(self, user_prompt: str, base64_image: str, mime_type: str,
+                                 system_prompt: Optional[str] = None) -> dict:
         """构建Anthropic格式的payload"""
+        active_system_prompt = system_prompt or self.SYSTEM_PROMPT
         return {
             "model": self.model,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
-            "system": self.SYSTEM_PROMPT,
+            "system": active_system_prompt,
             "messages": [
                 {
                     "role": "user",
@@ -186,7 +225,8 @@ class OCRProcessor:
         except Exception as e:
             return False, f"解析响应失败: {str(e)}"
 
-    def _call_api(self, image_path: str, user_prompt: str) -> Tuple[bool, str]:
+    def _call_api(self, image_path: str, user_prompt: str,
+                  system_prompt: Optional[str] = None) -> Tuple[bool, str]:
         """
         调用大模型API（支持多种提供商）
 
@@ -200,10 +240,20 @@ class OCRProcessor:
 
             # 根据提供商构建不同的payload
             if self.provider == "anthropic":
-                payload = self._build_payload_anthropic(user_prompt, base64_image, mime_type)
+                payload = self._build_payload_anthropic(
+                    user_prompt,
+                    base64_image,
+                    mime_type,
+                    system_prompt=system_prompt
+                )
             else:
                 # OpenAI兼容格式
-                payload = self._build_payload_openai(user_prompt, base64_image, mime_type)
+                payload = self._build_payload_openai(
+                    user_prompt,
+                    base64_image,
+                    mime_type,
+                    system_prompt=system_prompt
+                )
 
             response = requests.post(
                 self.api_url,
@@ -222,6 +272,154 @@ class OCRProcessor:
             return False, f"请求超时（{self.timeout}秒）"
         except Exception as e:
             return False, f"异常: {str(e)}"
+
+    def _build_profile_user_prompt(self) -> str:
+        """构建试运行结构分析的提示词"""
+        return """请分析图片中的主表格结构，并仅返回严格JSON：
+{
+  "headers": ["列1", "列2"],
+  "column_count": 2,
+  "column_notes": ["列1: 说明", "列2: 说明"],
+  "row_rules": ["规则1", "规则2"],
+  "output_rules": ["规则1", "规则2"]
+}
+要求：
+1. headers按从左到右顺序，column_count必须等于headers长度。
+2. column_notes用于描述该列的格式或内容要点，不要过长。
+3. row_rules描述行/记录的组织规律（如合并单元格、空行、序号、日期格式等）。
+4. output_rules描述CSV输出规则（例如用英文逗号分隔、双引号包裹、禁止Markdown等）。
+5. 不要输出除JSON以外的任何内容。"""
+
+    def _parse_profile_response(self, content: str) -> Optional[PromptProfile]:
+        """解析试运行返回的JSON结构"""
+        cleaned = CSVParser.clean_markdown(content).strip()
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+
+        json_text = cleaned[start:end + 1]
+        try:
+            data = json.loads(json_text)
+        except Exception:
+            return None
+
+        headers = data.get("headers") or []
+        if not isinstance(headers, list) or not headers:
+            return None
+
+        column_count = int(data.get("column_count") or len(headers))
+        if column_count != len(headers):
+            return None
+
+        column_notes = data.get("column_notes") or []
+        row_rules = data.get("row_rules") or []
+        output_rules = data.get("output_rules") or []
+
+        return PromptProfile(
+            headers=headers,
+            column_count=column_count,
+            column_notes=column_notes,
+            row_rules=row_rules,
+            output_rules=output_rules
+        )
+
+    def _build_user_prompt_from_profile(self, profile: PromptProfile, retry_note: str = "") -> str:
+        """根据试运行结构生成动态提示词"""
+        headers_str = " | ".join(profile.headers)
+        notes_str = "\n".join(profile.column_notes) if profile.column_notes else "（无）"
+        row_rules = "\n".join(profile.row_rules) if profile.row_rules else "（无）"
+        output_rules = "\n".join(profile.output_rules) if profile.output_rules else "（无）"
+
+        prompt = f"""请严格识别图片中的主表格数据，并输出CSV文本。
+列数：{profile.column_count} 列
+列标题（第一行必须严格一致）：{headers_str}
+
+列说明：
+{notes_str}
+
+行/记录规则：
+{row_rules}
+
+输出规则：
+{output_rules}
+
+强制要求：
+1. 只输出CSV文本，不要Markdown，不要解释。
+2. 使用英文逗号分隔；如单元格含逗号/引号/换行，用双引号包裹。
+3. 所有行列数必须与表头一致，不得增删列。
+4. 保持原始内容，不翻译、不推断。"""
+
+        if retry_note:
+            prompt += f"\n\n重试要求：{retry_note}"
+
+        return prompt
+
+    def generate_prompt_profile(self, image_path: str, max_retries: int = 2) -> Optional[PromptProfile]:
+        """基于试运行图片生成结构化PromptProfile"""
+        user_prompt = self._build_profile_user_prompt()
+
+        for attempt in range(max_retries):
+            success, content = self._call_api(
+                image_path,
+                user_prompt,
+                system_prompt=PROFILE_SYSTEM_PROMPT
+            )
+            if not success:
+                if attempt == max_retries - 1:
+                    print(f"[ERROR] Profile generation failed: {content}")
+                continue
+
+            profile = self._parse_profile_response(content)
+            if profile:
+                return profile
+
+        return None
+
+    def process_image_with_profile(self, image_path: str, profile: PromptProfile,
+                                   max_retries: int = 3) -> Optional[str]:
+        """
+        使用试运行生成的结构化提示词识别图片
+        Returns:
+            CSV文本或None
+        """
+        for attempt in range(max_retries):
+            retry_note = ""
+            if attempt > 0:
+                retry_note = "请严格按照列数与列标题输出，保持每行列数一致。"
+
+            user_prompt = self._build_user_prompt_from_profile(profile, retry_note=retry_note)
+            success, content = self._call_api(image_path, user_prompt)
+
+            if not success:
+                if attempt == max_retries - 1:
+                    print(f"  [ERROR] API调用失败: {content}")
+                continue
+
+            csv_text = CSVParser.clean_markdown(content)
+            headers, rows, parse_error = CSVParser.parse(csv_text)
+
+            if parse_error:
+                if attempt == max_retries - 1:
+                    print(f"  [ERROR] CSV解析失败: {parse_error}")
+                continue
+
+            if len(headers) != profile.column_count:
+                if attempt < max_retries - 1:
+                    print(f"  [RETRY] 列数不匹配，期望{profile.column_count}列，实际{len(headers)}列")
+                    continue
+                return None
+
+            for idx, row in enumerate(rows, start=2):
+                if len(row) != profile.column_count:
+                    if attempt < max_retries - 1:
+                        print(f"  [RETRY] 第{idx}行列数不匹配，重试中...")
+                        break
+                    return None
+
+            return csv_text
+
+        return None
 
     def process_image(self, image_path: str,
                      max_retries: int = 3) -> Tuple[Optional[TableData], Optional[str]]:

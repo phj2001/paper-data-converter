@@ -18,12 +18,21 @@
           min="1"
           max="20"
           class="input"
+          :disabled="useSuggested"
           placeholder="请输入列数"
           @input="updateHeaders"
         />
       </div>
 
       <!-- 列标题设置 -->
+      <div v-if="suggestedHeaders.length" class="trial-toggle">
+        <label class="checkbox-label">
+          <input type="checkbox" v-model="useSuggested" />
+          <span>使用试运行表头与提示词</span>
+        </label>
+        <p class="trial-hint">启用后将锁定列配置，并自动使用试运行生成的提示词。</p>
+      </div>
+
       <div v-if="columnCount > 0" class="form-group">
         <label class="form-label">列标题</label>
         <div class="headers-grid">
@@ -37,6 +46,7 @@
               v-model="headers[index]"
               type="text"
               class="input"
+              :disabled="useSuggested"
               :placeholder="`列${index + 1}标题`"
             />
           </div>
@@ -93,6 +103,10 @@ const props = defineProps({
   isProcessing: {
     type: Boolean,
     default: false
+  },
+  suggestedHeaders: {
+    type: Array,
+    default: () => []
   }
 })
 
@@ -100,9 +114,11 @@ const emit = defineEmits(['configure', 'back'])
 
 const columnCount = ref(4)
 const headers = ref(['序号', '品名', '数量', '单位'])
+const useSuggested = ref(false)
 
 // 更新列标题数组
 const updateHeaders = () => {
+  if (useSuggested.value) return
   const count = Math.max(1, Math.min(20, columnCount.value || 1))
   const current = headers.value.length
 
@@ -128,11 +144,33 @@ const isValid = computed(() => {
 // 处理配置
 const handleConfigure = () => {
   if (!isValid.value) return
-  emit('configure', headers.value.map(h => h.trim()))
+  emit('configure', {
+    headers: headers.value.map(h => h.trim()),
+    useTrialProfile: useSuggested.value
+  })
 }
 
 // 监听列数变化
 watch(columnCount, updateHeaders)
+
+const applySuggestedHeaders = () => {
+  if (!props.suggestedHeaders.length) return
+  columnCount.value = props.suggestedHeaders.length
+  headers.value = [...props.suggestedHeaders]
+}
+
+watch(() => props.suggestedHeaders, (newHeaders) => {
+  if (newHeaders && newHeaders.length) {
+    useSuggested.value = true
+    applySuggestedHeaders()
+  }
+})
+
+watch(useSuggested, (enabled) => {
+  if (enabled) {
+    applySuggestedHeaders()
+  }
+})
 
 // 初始化
 updateHeaders()
@@ -197,6 +235,29 @@ updateHeaders()
   margin-top: 32px;
   padding-top: 24px;
   border-top: 1px solid var(--border-color);
+}
+
+.trial-toggle {
+  margin-bottom: 20px;
+  padding: 12px;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.trial-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-tertiary);
 }
 
 .preview-title {

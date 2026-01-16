@@ -39,6 +39,42 @@ export async function uploadFiles(files) {
 }
 
 /**
+ * 试运行：上传单张图片
+ */
+export async function runTrial(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await fetch(`${API_BASE}/trial/run`, {
+    method: 'POST',
+    body: formData
+  })
+
+  if (!response.ok) {
+    const error = await safeParseJson(response)
+    throw new Error(error.detail || `试运行失败 (${response.status})`)
+  }
+
+  return await response.json()
+}
+
+/**
+ * 设置默认提示词画像
+ */
+export async function setDefaultProfile(profileId) {
+  const response = await fetch(`${API_BASE}/profiles/${profileId}/activate`, {
+    method: 'POST'
+  })
+
+  if (!response.ok) {
+    const error = await safeParseJson(response)
+    throw new Error(error.detail || `设置默认配置失败 (${response.status})`)
+  }
+
+  return await response.json()
+}
+
+/**
  * 开始处理
  * columnConfig 参数应该是完整的请求体，包含 task_id 和 column_config
  */

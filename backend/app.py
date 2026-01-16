@@ -7,6 +7,7 @@ import os
 import sys
 import uuid
 import asyncio
+import hashlib
 from typing import List, Optional
 from datetime import datetime
 from pathlib import Path
@@ -19,10 +20,12 @@ from pydantic import BaseModel
 # 添加父目录到路径，以便导入核心模块
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from ocr_processor import OCRProcessor
+from ocr_processor import OCRProcessor, PromptProfile
 from table_processor import CSVParser
 from excel_writer import ExcelWriter
 from llm_config import get_config, LLMConfig, LLMConfigManager, get_config_manager
+from db import get_db_session
+import models
 
 
 # ==================== 数据模型 ====================
@@ -37,6 +40,7 @@ class ProcessRequest(BaseModel):
     """处理请求模型"""
     task_id: str
     column_config: ColumnConfig
+    prompt_profile_id: Optional[str] = None
 
 
 class TaskStatus(BaseModel):
@@ -93,11 +97,49 @@ def get_image_files(directory: Path) -> List[Path]:
     return sorted(files)
 
 
-async def process_task(task_id: str, column_headers: List[str]):
+def _hash_bytes(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def _profile_from_model(model: models.PromptProfile) -> PromptProfile:
+    return PromptProfile(
+        headers=model.headers or [],
+        column_count=model.column_count or 0,
+        column_notes=model.column_notes or [],
+        row_rules=model.row_rules or [],
+        output_rules=model.output_rules or []
+    )
+
+
+def _get_active_profile(session) -> Optional[models.PromptProfile]:
+    settings = session.get(models.ProfileSettings, 1)
+    if settings and settings.active_profile_id:
+        return session.get(models.PromptProfile, settings.active_profile_id)
+    return None
+
+
+async def process_task(task_id: str, column_headers: List[str], prompt_profile_id: Optional[str] = None):
     """后台处理任务"""
     try:
         task = tasks[task_id]
         task.status = "processing"
+
+        db_profile = None
+        with get_db_session() as session:
+            db_task = session.get(models.TaskRecord, uuid.UUID(task_id))
+            if prompt_profile_id:
+                db_profile = session.get(models.PromptProfile, uuid.UUID(prompt_profile_id))
+            else:
+                db_profile = _get_active_profile(session)
+
+            if db_profile:
+                db_profile.last_used_at = datetime.now()
+
+            if db_task:
+                db_task.status = "processing"
+                db_task.profile_id = db_profile.id if db_profile else None
+
+            session.commit()
 
         # 初始化计数器（确保从0开始）
         task.success_count = 0
@@ -121,6 +163,11 @@ async def process_task(task_id: str, column_headers: List[str]):
 
         task.total_files = len(image_files)
 
+        # 试运行提示词配置
+        prompt_profile = _profile_from_model(db_profile) if db_profile else None
+        if prompt_profile and prompt_profile.headers:
+            column_headers = prompt_profile.headers
+
         # 创建Excel写入器
         output_filename = f"{task_id}_output.xlsx"
         output_path = OUTPUT_DIR / output_filename
@@ -137,11 +184,18 @@ async def process_task(task_id: str, column_headers: List[str]):
             print(f"[DEBUG] Processing {idx+1}/{len(image_files)}: {image_path.name}")
 
             try:
-                csv_text = ocr_processor.process_image_with_headers(
-                    str(image_path),
-                    column_headers,
-                    max_retries=3
-                )
+                if prompt_profile:
+                    csv_text = ocr_processor.process_image_with_profile(
+                        str(image_path),
+                        prompt_profile,
+                        max_retries=3
+                    )
+                else:
+                    csv_text = ocr_processor.process_image_with_headers(
+                        str(image_path),
+                        column_headers,
+                        max_retries=3
+                    )
 
                 if csv_text:
                     headers, rows, parse_error = CSVParser.parse(csv_text)
@@ -149,6 +203,30 @@ async def process_task(task_id: str, column_headers: List[str]):
                     if not parse_error and len(headers) == len(column_headers):
                         excel_writer.add_data(rows, image_path.name)
                         task.success_count += 1
+                        with get_db_session() as session:
+                            upload = session.query(models.UploadRecord).filter(
+                                models.UploadRecord.task_id == uuid.UUID(task_id),
+                                models.UploadRecord.file_path == str(image_path)
+                            ).first()
+                            if upload:
+                                table = models.ExtractedTable(
+                                    task_id=uuid.UUID(task_id),
+                                    upload_id=upload.id,
+                                    headers=headers,
+                                    row_count=len(rows)
+                                )
+                                session.add(table)
+                                session.flush()
+                                row_records = [
+                                    models.ExtractedRow(
+                                        table_id=table.id,
+                                        row_index=row_index,
+                                        row_data=row
+                                    )
+                                    for row_index, row in enumerate(rows, start=1)
+                                ]
+                                session.add_all(row_records)
+                                session.commit()
                         print(f"[DEBUG] Success: {image_path.name} (total success: {task.success_count})")
                     else:
                         task.fail_count += 1
@@ -165,18 +243,29 @@ async def process_task(task_id: str, column_headers: List[str]):
             print(f"[DEBUG] After processing {image_path.name}: success={task.success_count}, fail={task.fail_count}, processed={task.processed_files}")
             await asyncio.sleep(0.5)  # 限流
 
-        # 保存Excel
+        # Save Excel
         excel_writer.save()
         task.output_file = output_filename
         task.status = "completed"
         task.progress = 100
-        task.message = f"处理完成：成功 {task.success_count} 张，失败 {task.fail_count} 张"
+        task.message = f"Processing failed: {str(e)}"
         print(f"[DEBUG] Final: success={task.success_count}, fail={task.fail_count}, total={task.total_files}")
+
+        with get_db_session() as session:
+            db_task = session.get(models.TaskRecord, uuid.UUID(task_id))
+            if db_task:
+                db_task.status = task.status
+                db_task.processed_files = task.processed_files
+                db_task.success_count = task.success_count
+                db_task.fail_count = task.fail_count
+                db_task.output_file = task.output_file
+                db_task.message = task.message
+                session.commit()
 
     except Exception as e:
         task = tasks[task_id]
         task.status = "failed"
-        task.message = f"处理失败：{str(e)}"
+        task.message = f"?????{str(e)}"
         print(f"[DEBUG] Outer exception: {str(e)}")
 
 
@@ -205,6 +294,7 @@ async def upload_files(files: List[UploadFile] = File(...)):
 
     # 保存文件
     uploaded_files = []
+    saved_files = []
     for file in files:
         # 获取纯文件名（去除路径）
         filename = os.path.basename(file.filename)
@@ -225,8 +315,31 @@ async def upload_files(files: List[UploadFile] = File(...)):
             content = await file.read()
             f.write(content)
         uploaded_files.append(filename)
+        saved_files.append({"name": filename, "path": str(file_path)})
+
+    with get_db_session() as session:
+        db_task = models.TaskRecord(
+            id=uuid.UUID(task_id),
+            status="pending",
+            total_files=len(uploaded_files),
+            processed_files=0,
+            success_count=0,
+            fail_count=0
+        )
+        session.add(db_task)
+        upload_records = [
+            models.UploadRecord(
+                task_id=db_task.id,
+                file_name=item["name"],
+                file_path=item["path"]
+            )
+            for item in saved_files
+        ]
+        session.add_all(upload_records)
+        session.commit()
 
     # 创建任务状态
+    # Create task status
     tasks[task_id] = TaskStatus(
         task_id=task_id,
         status="pending",
@@ -235,7 +348,7 @@ async def upload_files(files: List[UploadFile] = File(...)):
         processed_files=0,
         success_count=0,
         fail_count=0,
-        message=f"已上传 {len(uploaded_files)} 个文件"
+        message=f"Uploaded {len(uploaded_files)} files"
     )
 
     return {
@@ -243,6 +356,156 @@ async def upload_files(files: List[UploadFile] = File(...)):
         "file_count": len(uploaded_files),
         "files": uploaded_files
     }
+
+
+@app.post("/api/trial/run")
+async def run_trial(file: UploadFile = File(...)):
+    """试运行：上传单张图片并返回识别结果"""
+    if not file:
+        raise HTTPException(status_code=400, detail="没有上传文件")
+
+    trial_id = str(uuid.uuid4())
+    trial_dir = UPLOAD_DIR / "trial" / trial_id
+    trial_dir.mkdir(exist_ok=True, parents=True)
+
+    filename = os.path.basename(file.filename)
+    file_path = trial_dir / filename
+
+    with open(file_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
+
+    source_hash = _hash_bytes(content)
+
+    llm_config = get_config()
+    ocr_processor = OCRProcessor(llm_config)
+
+    prompt_profile = ocr_processor.generate_prompt_profile(str(file_path))
+    if not prompt_profile:
+        raise HTTPException(status_code=500, detail="Trial profile generation failed")
+
+    csv_text = ocr_processor.process_image_with_profile(
+        str(file_path),
+        prompt_profile,
+        max_retries=3
+    )
+    if not csv_text:
+        raise HTTPException(status_code=500, detail="Trial recognition failed")
+
+    headers, rows, parse_error = CSVParser.parse(csv_text)
+    if parse_error:
+        raise HTTPException(status_code=500, detail=f"CSV parse failed: {parse_error}")
+
+    output_filename = f"{trial_id}_trial.xlsx"
+    output_path = OUTPUT_DIR / output_filename
+    excel_writer = ExcelWriter(str(output_path), headers)
+    excel_writer.add_data(rows, filename)
+    excel_writer.save()
+
+    profile_id = None
+    with get_db_session() as session:
+        db_profile = models.PromptProfile(
+            source_image_hash=source_hash,
+            headers=prompt_profile.headers,
+            column_count=prompt_profile.column_count,
+            column_notes=prompt_profile.column_notes,
+            row_rules=prompt_profile.row_rules,
+            output_rules=prompt_profile.output_rules,
+            active=False
+        )
+        session.add(db_profile)
+        session.flush()
+        profile_id = str(db_profile.id)
+
+        db_task = models.TaskRecord(
+            id=uuid.UUID(trial_id),
+            status="trial",
+            total_files=1,
+            processed_files=1,
+            success_count=1,
+            fail_count=0,
+            output_file=output_filename
+        )
+        session.add(db_task)
+        session.flush()
+
+        upload = models.UploadRecord(
+            task_id=db_task.id,
+            file_name=filename,
+            file_path=str(file_path)
+        )
+        session.add(upload)
+        session.flush()
+
+        table = models.ExtractedTable(
+            task_id=db_task.id,
+            upload_id=upload.id,
+            headers=headers,
+            row_count=len(rows)
+        )
+        session.add(table)
+        session.flush()
+
+        row_records = [
+            models.ExtractedRow(
+                table_id=table.id,
+                row_index=row_index,
+                row_data=row
+            )
+            for row_index, row in enumerate(rows, start=1)
+        ]
+        session.add_all(row_records)
+        session.commit()
+
+    return {
+        "trial_id": trial_id,
+        "profile_id": profile_id,
+        "headers": headers,
+        "column_count": len(headers),
+        "rows": rows[:20],
+        "total_rows": len(rows),
+        "csv_text": csv_text,
+        "output_file": output_filename,
+        "prompt_profile": prompt_profile.to_dict()
+    }
+
+
+@app.get("/api/trial/download/{trial_id}")
+async def download_trial(trial_id: str):
+    """下载试运行结果"""
+    output_filename = f"{trial_id}_trial.xlsx"
+    file_path = OUTPUT_DIR / output_filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="试运行结果不存在或已过期")
+
+    return FileResponse(
+        path=file_path,
+        filename=f"试运行结果_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
+@app.post("/api/profiles/{profile_id}/activate")
+async def activate_profile(profile_id: str):
+    """设置默认试运行提示词画像"""
+    with get_db_session() as session:
+        db_profile = session.get(models.PromptProfile, uuid.UUID(profile_id))
+        if not db_profile:
+            raise HTTPException(status_code=404, detail="提示词画像不存在")
+
+        session.query(models.PromptProfile).update({models.PromptProfile.active: False})
+        db_profile.active = True
+
+        settings = session.get(models.ProfileSettings, 1)
+        if not settings:
+            settings = models.ProfileSettings(id=1, active_profile_id=db_profile.id)
+            session.add(settings)
+        else:
+            settings.active_profile_id = db_profile.id
+
+        session.commit()
+
+    return {"message": "已设为默认", "profile_id": profile_id}
 
 
 @app.post("/api/process")
@@ -265,7 +528,8 @@ async def start_process(request: ProcessRequest, background_tasks: BackgroundTas
     background_tasks.add_task(
         process_task,
         task_id,
-        request.column_config.headers
+        request.column_config.headers,
+        request.prompt_profile_id
     )
 
     return {"task_id": task_id, "status": "started"}

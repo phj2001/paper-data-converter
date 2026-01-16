@@ -1,87 +1,89 @@
 <template>
   <div class="file-upload">
-    <div class="card">
-      <h2 class="card-title">上传表格图片</h2>
-      <p class="card-description">
-        支持选择文件夹或多选图片文件，支持 JPG、PNG、BMP、WebP 格式
-      </p>
+    <div class="upload-layout">
+      <div class="card">
+        <h2 class="card-title">上传表格图片</h2>
+        <p class="card-description">
+          支持选择文件夹或多选图片文件，支持 JPG、PNG、BMP、WebP 格式
+        </p>
 
-      <!-- 拖拽上传区域 -->
-      <div
-        class="upload-area"
-        :class="{ dragging: isDragging }"
-        @click="selectFiles"
-        @dragover.prevent="isDragging = true"
-        @dragleave.prevent="isDragging = false"
-        @drop.prevent="handleDrop"
-      >
-        <svg width="64" height="64" viewBox="0 0 64 64" fill="none" class="upload-icon">
-          <rect width="64" height="64" rx="16" fill="#EEF0F2"/>
-          <path d="M32 24v16m-8-8l8-8 8 8" stroke="#0066FF" stroke-width="2.5" stroke-linecap="round"/>
-          <rect x="20" y="44" width="24" height="4" rx="2" fill="#0066FF"/>
-        </svg>
-
-        <div class="upload-text">
-          <p class="upload-title">点击或拖拽上传</p>
-          <p class="upload-hint">支持选择文件夹上传多个图片</p>
-        </div>
-
-        <input
-          ref="fileInputRef"
-          type="file"
-          multiple
-          accept="image/jpeg,image/png,image/bmp,image/webp"
-          webkitdirectory
-          @change="handleFileSelect"
-          style="display: none"
-        />
-      </div>
-
-      <!-- 文件列表 -->
-      <div v-if="selectedFiles.length > 0" class="file-list">
-        <div class="file-list-header">
-          <span>已选择 {{ selectedFiles.length }} 个文件</span>
-          <button class="btn-text" @click="clearFiles">清空</button>
-        </div>
-
-        <div class="file-list-items">
-          <div v-for="file in selectedFiles.slice(0, 10)" :key="file.name" class="file-item">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <rect width="16" height="16" rx="4" fill="#EEF0F2"/>
-              <path d="M4.5 11.5V4.5l3.5 3.5 3.5-3.5v7" stroke="#666" stroke-width="1" stroke-linecap="round"/>
-            </svg>
-            <span class="file-name">{{ file.name }}</span>
-            <span class="file-size">{{ formatSize(file.size) }}</span>
-          </div>
-
-          <div v-if="selectedFiles.length > 10" class="file-item file-item-more">
-            <span>还有 {{ selectedFiles.length - 10 }} 个文件...</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 操作按钮 -->
-      <div class="actions">
-        <button
-          class="btn btn-primary"
-          :disabled="selectedFiles.length === 0 || isUploading"
-          @click="handleUpload"
+        <!-- 拖拽上传区域 -->
+        <div
+          class="upload-area"
+          :class="{ dragging: isDragging }"
+          @click="selectFiles"
+          @dragover.prevent="isDragging = true"
+          @dragleave.prevent="isDragging = false"
+          @drop.prevent="handleDrop"
         >
-          <span v-if="isUploading" class="spinner"></span>
-          <span v-else>继续</span>
-        </button>
-      </div>
-    </div>
+          <svg width="64" height="64" viewBox="0 0 64 64" fill="none" class="upload-icon">
+            <rect width="64" height="64" rx="16" fill="#EEF0F2"/>
+            <path d="M32 24v16m-8-8l8-8 8 8" stroke="#0066FF" stroke-width="2.5" stroke-linecap="round"/>
+            <rect x="20" y="44" width="24" height="4" rx="2" fill="#0066FF"/>
+          </svg>
 
-    <!-- 使用说明 -->
-    <div class="card card-info">
-      <h3>使用说明</h3>
-      <ul class="info-list">
-        <li>确保图片中的表格清晰可见，无严重变形</li>
-        <li>建议使用高分辨率扫描图片，提高识别准确率</li>
-        <li>所有图片将使用相同的列结构进行处理</li>
-        <li>支持的图片格式：JPG、PNG、BMP、WebP</li>
-      </ul>
+          <div class="upload-text">
+            <p class="upload-title">点击或拖拽上传</p>
+            <p class="upload-hint">支持选择文件夹上传多个图片</p>
+          </div>
+
+          <input
+            ref="fileInputRef"
+            type="file"
+            multiple
+            accept="image/jpeg,image/png,image/bmp,image/webp"
+            webkitdirectory
+            @change="handleFileSelect"
+            style="display: none"
+          />
+        </div>
+
+        <!-- 文件列表 -->
+        <div v-if="selectedFiles.length > 0" class="file-list">
+          <div class="file-list-header">
+            <span>已选择 {{ selectedFiles.length }} 个文件</span>
+            <button class="btn-text" @click="clearFiles">清空</button>
+          </div>
+
+          <div class="file-list-items">
+            <div v-for="file in selectedFiles.slice(0, 10)" :key="file.name" class="file-item">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <rect width="16" height="16" rx="4" fill="#EEF0F2"/>
+                <path d="M4.5 11.5V4.5l3.5 3.5 3.5-3.5v7" stroke="#666" stroke-width="1" stroke-linecap="round"/>
+              </svg>
+              <span class="file-name">{{ file.name }}</span>
+              <span class="file-size">{{ formatSize(file.size) }}</span>
+            </div>
+
+            <div v-if="selectedFiles.length > 10" class="file-item file-item-more">
+              <span>还有 {{ selectedFiles.length - 10 }} 个文件...</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 操作按钮 -->
+        <div class="actions">
+          <button
+            class="btn btn-primary"
+            :disabled="selectedFiles.length === 0 || isUploading"
+            @click="handleUpload"
+          >
+            <span v-if="isUploading" class="spinner"></span>
+            <span v-else>继续</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 使用说明 -->
+      <div class="card card-info">
+        <h3>使用步骤</h3>
+        <ul class="info-list">
+          <li>先点击“试运行”，上传一张样本图，系统生成表头与提示词，确认格式与效果</li>
+          <li>回到“上传表格图片”，选择文件夹或多张图片并上传</li>
+          <li>配置列并开始处理，等待识别完成后下载 Excel</li>
+          <li>拍照尽量对齐、清晰、光线均匀，效果更稳定</li>
+        </ul>
+      </div>
     </div>
   </div>
 </template>
@@ -153,8 +155,14 @@ const handleUpload = () => {
 
 <style scoped>
 .file-upload {
-  max-width: 600px;
-  margin: 0 auto;
+  width: 100%;
+}
+
+.upload-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.9fr);
+  gap: 24px;
+  align-items: start;
 }
 
 .card-title {
@@ -295,5 +303,11 @@ const handleUpload = () => {
 
 .info-list li:last-child {
   margin-bottom: 0;
+}
+
+@media (max-width: 900px) {
+  .upload-layout {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
