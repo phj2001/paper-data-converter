@@ -12,7 +12,7 @@ from typing import List, Optional
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -36,11 +36,23 @@ class ColumnConfig(BaseModel):
     column_count: int
 
 
+class RuntimeLLMConfig(BaseModel):
+    """请求级别的大模型配置（不落库）"""
+    provider: str
+    model: str
+    api_key: str
+    base_url: Optional[str] = None
+    temperature: float = 0.01
+    max_tokens: int = 4096
+    timeout: int = 180
+
+
 class ProcessRequest(BaseModel):
     """处理请求模型"""
     task_id: str
     column_config: ColumnConfig
     prompt_profile_id: Optional[str] = None
+    llm_config: Optional[RuntimeLLMConfig] = None
 
 
 class TaskStatus(BaseModel):
@@ -118,13 +130,19 @@ def _get_active_profile(session) -> Optional[models.PromptProfile]:
     return None
 
 
-async def process_task(task_id: str, column_headers: List[str], prompt_profile_id: Optional[str] = None):
+async def process_task(
+    task_id: str,
+    column_headers: List[str],
+    prompt_profile_id: Optional[str] = None,
+    llm_config: Optional[LLMConfig] = None
+):
     """后台处理任务"""
     try:
         task = tasks[task_id]
         task.status = "processing"
 
         db_profile = None
+        prompt_profile = None
         with get_db_session() as session:
             db_task = session.get(models.TaskRecord, uuid.UUID(task_id))
             if prompt_profile_id:
@@ -133,6 +151,7 @@ async def process_task(task_id: str, column_headers: List[str], prompt_profile_i
                 db_profile = _get_active_profile(session)
 
             if db_profile:
+                prompt_profile = _profile_from_model(db_profile)
                 db_profile.last_used_at = datetime.now()
 
             if db_task:
@@ -164,7 +183,6 @@ async def process_task(task_id: str, column_headers: List[str], prompt_profile_i
         task.total_files = len(image_files)
 
         # 试运行提示词配置
-        prompt_profile = _profile_from_model(db_profile) if db_profile else None
         if prompt_profile and prompt_profile.headers:
             column_headers = prompt_profile.headers
 
@@ -174,8 +192,7 @@ async def process_task(task_id: str, column_headers: List[str], prompt_profile_i
         excel_writer = ExcelWriter(str(output_path), column_headers)
 
         # 创建OCR处理器（使用配置管理器）
-        llm_config = get_config()
-        ocr_processor = OCRProcessor(llm_config)
+        ocr_processor = OCRProcessor(llm_config or get_config())
 
         # 处理每张图片
         for idx, image_path in enumerate(image_files):
@@ -248,7 +265,7 @@ async def process_task(task_id: str, column_headers: List[str], prompt_profile_i
         task.output_file = output_filename
         task.status = "completed"
         task.progress = 100
-        task.message = f"Processing failed: {str(e)}"
+        task.message = f"处理完成：成功{task.success_count}，失败{task.fail_count}"
         print(f"[DEBUG] Final: success={task.success_count}, fail={task.fail_count}, total={task.total_files}")
 
         with get_db_session() as session:
@@ -265,7 +282,7 @@ async def process_task(task_id: str, column_headers: List[str], prompt_profile_i
     except Exception as e:
         task = tasks[task_id]
         task.status = "failed"
-        task.message = f"?????{str(e)}"
+        task.message = f"处理失败：{str(e)}"
         print(f"[DEBUG] Outer exception: {str(e)}")
 
 
@@ -359,7 +376,18 @@ async def upload_files(files: List[UploadFile] = File(...)):
 
 
 @app.post("/api/trial/run")
-async def run_trial(file: UploadFile = File(...)):
+async def run_trial(
+    file: UploadFile = File(...),
+    provider: Optional[str] = Form(None),
+    model: Optional[str] = Form(None),
+    api_key: Optional[str] = Form(None),
+    base_url: Optional[str] = Form(None),
+    temperature: float = Form(0.01),
+    max_tokens: int = Form(4096),
+    timeout: int = Form(180),
+    feedback_text: Optional[str] = Form(None),
+    base_profile_id: Optional[str] = Form(None)
+):
     """试运行：上传单张图片并返回识别结果"""
     if not file:
         raise HTTPException(status_code=400, detail="没有上传文件")
@@ -377,12 +405,53 @@ async def run_trial(file: UploadFile = File(...)):
 
     source_hash = _hash_bytes(content)
 
-    llm_config = get_config()
-    ocr_processor = OCRProcessor(llm_config)
+    user_config = None
+    if provider or model or api_key:
+        if not (provider and model and api_key):
+            raise HTTPException(status_code=400, detail="缺少必填的模型配置参数")
+        user_config = LLMConfig(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout
+        )
+        is_valid, error_msg = user_config.validate()
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=error_msg)
 
-    prompt_profile = ocr_processor.generate_prompt_profile(str(file_path))
-    if not prompt_profile:
-        raise HTTPException(status_code=500, detail="Trial profile generation failed")
+    ocr_processor = OCRProcessor(user_config or get_config())
+
+    base_profile = None
+    if base_profile_id:
+        try:
+            base_profile_uuid = uuid.UUID(base_profile_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="基础画像ID格式无效")
+        with get_db_session() as session:
+            db_profile = session.get(models.PromptProfile, base_profile_uuid)
+            if not db_profile:
+                raise HTTPException(status_code=404, detail="基础画像不存在")
+            base_profile = _profile_from_model(db_profile)
+
+    if feedback_text and feedback_text.strip():
+        if not base_profile:
+            base_profile = ocr_processor.generate_prompt_profile(str(file_path))
+            if not base_profile:
+                raise HTTPException(status_code=500, detail="Trial profile generation failed")
+        prompt_profile = ocr_processor.refine_prompt_profile(
+            str(file_path),
+            base_profile,
+            feedback_text
+        )
+        if not prompt_profile:
+            raise HTTPException(status_code=500, detail="试运行画像优化失败")
+    else:
+        prompt_profile = ocr_processor.generate_prompt_profile(str(file_path))
+        if not prompt_profile:
+            raise HTTPException(status_code=500, detail="Trial profile generation failed")
 
     csv_text = ocr_processor.process_image_with_profile(
         str(file_path),
@@ -460,6 +529,7 @@ async def run_trial(file: UploadFile = File(...)):
     return {
         "trial_id": trial_id,
         "profile_id": profile_id,
+        "iteration_id": profile_id,
         "headers": headers,
         "column_count": len(headers),
         "rows": rows[:20],
@@ -511,10 +581,6 @@ async def activate_profile(profile_id: str):
 @app.post("/api/process")
 async def start_process(request: ProcessRequest, background_tasks: BackgroundTasks):
     """开始处理任务"""
-    # 打印请求数据用于调试
-    import json
-    print(f"[DEBUG] Received request: {request.model_dump()}")
-
     task_id = request.task_id
 
     if task_id not in tasks:
@@ -525,11 +591,27 @@ async def start_process(request: ProcessRequest, background_tasks: BackgroundTas
         raise HTTPException(status_code=400, detail="任务正在处理中")
 
     # 添加后台任务
+    user_config = None
+    if request.llm_config:
+        user_config = LLMConfig(
+            provider=request.llm_config.provider,
+            model=request.llm_config.model,
+            api_key=request.llm_config.api_key,
+            base_url=request.llm_config.base_url,
+            temperature=request.llm_config.temperature,
+            max_tokens=request.llm_config.max_tokens,
+            timeout=request.llm_config.timeout
+        )
+        is_valid, error_msg = user_config.validate()
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=error_msg)
+
     background_tasks.add_task(
         process_task,
         task_id,
         request.column_config.headers,
-        request.prompt_profile_id
+        request.prompt_profile_id,
+        user_config
     )
 
     return {"task_id": task_id, "status": "started"}

@@ -46,6 +46,27 @@ PROFILE_SYSTEM_PROMPT = """ä½ æ˜¯ä¸“ä¸šçš„çº¸è´¨è¡¨æ�
 5. row_rules/ output_rulesä¸ºæ•°ç»„ï¼Œç®€æ´ç›´è§‚ï¼Œä¸åšæŽ¨æ–­ã€‚"""
 
 
+PROFILE_SYSTEM_PROMPT = """你是专业的纸质表格结构分析专家。
+你的任务是从图片中抽取表格结构，并输出严格的 JSON。
+要求：
+1) 只输出 JSON，不要包含 Markdown 或任何额外文字。
+2) JSON 必须包含键：headers, column_count, column_notes, row_rules, output_rules。
+3) headers 按从左到右顺序列出表头。
+4) column_count 必须等于 headers 的长度。
+5) column_notes 用于描述每列的内容和格式要点，简洁即可。
+6) row_rules 描述行级规则（如合并单元格、空行、序号、日期格式等）。
+7) output_rules 描述 CSV 输出规则（如英文逗号分隔、双引号包裹、禁止 Markdown 等）。"""
+
+PROFILE_FEEDBACK_SYSTEM_PROMPT = """你是表格识别提示词的优化专家。
+你将收到表格图片、现有的提示词画像 JSON，以及用户的自然语言反馈。
+请在保证贴合图片内容的前提下，调整提示词画像以满足用户意图。
+规则：
+1) 只输出 JSON，不要附加其他文字。
+2) 键必须是：headers, column_count, column_notes, row_rules, output_rules。
+3) column_count 必须等于 headers 的长度。
+4) 如反馈明确指定列数或列名，优先遵循。
+5) 规则要简洁、可执行，便于输出 CSV。"""
+
 class OCRProcessor:
     """OCR处理器 - 统一的大模型调用接口"""
 
@@ -290,6 +311,18 @@ class OCRProcessor:
 4. output_rules描述CSV输出规则（例如用英文逗号分隔、双引号包裹、禁止Markdown等）。
 5. 不要输出除JSON以外的任何内容。"""
 
+    def _build_feedback_profile_prompt(self, base_profile: PromptProfile, feedback_text: str) -> str:
+        """Build a prompt to refine a profile based on user feedback."""
+        base_json = json.dumps(base_profile.to_dict(), ensure_ascii=False, indent=2)
+        feedback = feedback_text.strip()
+        return f"""Current prompt profile JSON:
+{base_json}
+
+User feedback (natural language):
+{feedback}
+
+Please revise the JSON profile to satisfy the feedback while matching the image."""
+
     def _parse_profile_response(self, content: str) -> Optional[PromptProfile]:
         """解析试运行返回的JSON结构"""
         cleaned = CSVParser.clean_markdown(content).strip()
@@ -368,6 +401,35 @@ class OCRProcessor:
             if not success:
                 if attempt == max_retries - 1:
                     print(f"[ERROR] Profile generation failed: {content}")
+                continue
+
+            profile = self._parse_profile_response(content)
+            if profile:
+                return profile
+
+        return None
+
+    def refine_prompt_profile(
+        self,
+        image_path: str,
+        base_profile: PromptProfile,
+        feedback_text: str,
+        max_retries: int = 2
+    ) -> Optional[PromptProfile]:
+        """Refine an existing prompt profile using user feedback."""
+        if not feedback_text or not feedback_text.strip():
+            return base_profile
+
+        user_prompt = self._build_feedback_profile_prompt(base_profile, feedback_text)
+        for attempt in range(max_retries):
+            success, content = self._call_api(
+                image_path,
+                user_prompt,
+                system_prompt=PROFILE_FEEDBACK_SYSTEM_PROMPT
+            )
+            if not success:
+                if attempt == max_retries - 1:
+                    print(f"[ERROR] Profile refine failed: {content}")
                 continue
 
             profile = self._parse_profile_response(content)

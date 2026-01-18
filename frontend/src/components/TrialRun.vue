@@ -56,6 +56,10 @@
               <span class="label">数据行</span>
               <span class="value">{{ result.total_rows }}</span>
             </div>
+            <div class="summary-item">
+              <span class="label">轮次</span>
+              <span class="value">{{ runCount }}</span>
+            </div>
           </div>
 
           <div class="preview-table">
@@ -79,10 +83,26 @@
               </li>
             </ul>
           </div>
+
+          <div class="feedback-panel">
+            <h3>反馈与优化</h3>
+            <p class="feedback-hint">
+              请使用自然语言描述你希望的表格结构，例如“应该有4列，列名为项目/数值1/数值2/备注，最后一列可为空”。
+            </p>
+            <textarea
+              v-model="feedbackText"
+              class="feedback-input"
+              placeholder="请输入自然语言反馈..."
+              rows="4"
+            ></textarea>
+          </div>
         </div>
       </div>
 
       <div class="trial-footer" v-if="result">
+        <button class="btn btn-primary" :disabled="isRunning || !feedbackText.trim()" @click="refineTrial">
+          继续优化
+        </button>
         <button class="btn btn-secondary" @click="resetTrial">重新试运行</button>
         <button class="btn btn-secondary" @click="downloadTrial">下载结果</button>
         <button class="btn btn-secondary" :disabled="isDefault" @click="setAsDefault">
@@ -96,7 +116,7 @@
 
 <script setup>
 import { ref } from 'vue'
-import { runTrial, setDefaultProfile } from '../api'
+import { runTrial, setDefaultProfile, getRuntimeLLMConfig } from '../api'
 
 const emit = defineEmits(['close', 'apply'])
 
@@ -104,12 +124,24 @@ const fileInputRef = ref(null)
 const selectedFile = ref(null)
 const isRunning = ref(false)
 const result = ref(null)
+const feedbackText = ref('')
+const runCount = ref(0)
 const errorMessage = ref('')
 const isDefault = ref(false)
 const statusMessage = ref('')
 const elapsedSeconds = ref(0)
 const statusTimers = []
 let elapsedTimer = null
+
+const updateResult = (data, isFirst = false) => {
+  result.value = data
+  isDefault.value = false
+  if (isFirst) {
+    runCount.value = 1
+  } else {
+    runCount.value += 1
+  }
+}
 
 const startStatusFlow = () => {
   statusMessage.value = '正在上传图片...'
@@ -154,14 +186,53 @@ const handleFileSelect = (event) => {
 const startTrial = async () => {
   if (!selectedFile.value) return
   errorMessage.value = ''
+
+  const llmConfig = getRuntimeLLMConfig()
+  if (!llmConfig || !llmConfig.provider || !llmConfig.model || !llmConfig.api_key) {
+    errorMessage.value = '请先在模型配置中填写 API Key'
+    return
+  }
+
   isRunning.value = true
   startStatusFlow()
   try {
-    const data = await runTrial(selectedFile.value)
-    result.value = data
-    isDefault.value = false
+    const data = await runTrial(selectedFile.value, llmConfig)
+    updateResult(data, true)
+    feedbackText.value = ''
   } catch (error) {
     errorMessage.value = error.message || '试运行失败'
+  } finally {
+    isRunning.value = false
+    stopStatusFlow()
+  }
+}
+
+const refineTrial = async () => {
+  if (!selectedFile.value || !result.value?.profile_id) return
+  const feedback = feedbackText.value.trim()
+  if (!feedback) {
+    errorMessage.value = '请输入反馈内容'
+    return
+  }
+
+  errorMessage.value = ''
+  const llmConfig = getRuntimeLLMConfig()
+  if (!llmConfig || !llmConfig.provider || !llmConfig.model || !llmConfig.api_key) {
+    errorMessage.value = '请先在模型配置中填写 API Key'
+    return
+  }
+
+  isRunning.value = true
+  startStatusFlow()
+  try {
+    const data = await runTrial(selectedFile.value, llmConfig, {
+      feedback_text: feedback,
+      base_profile_id: result.value.profile_id
+    })
+    updateResult(data)
+    feedbackText.value = ''
+  } catch (error) {
+    errorMessage.value = error.message || '优化失败'
   } finally {
     isRunning.value = false
     stopStatusFlow()
@@ -171,6 +242,8 @@ const startTrial = async () => {
 const resetTrial = () => {
   selectedFile.value = null
   result.value = null
+  feedbackText.value = ''
+  runCount.value = 0
   errorMessage.value = ''
   isDefault.value = false
   stopStatusFlow()
@@ -426,6 +499,35 @@ const formatSize = (bytes) => {
   font-size: 13px;
   color: var(--text-secondary);
   margin-bottom: 6px;
+}
+
+.feedback-panel {
+  margin-top: 18px;
+  padding: 12px;
+  background: var(--bg-secondary);
+  border-radius: 10px;
+}
+
+.feedback-panel h3 {
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.feedback-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+
+.feedback-input {
+  width: 100%;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  resize: vertical;
+  background: white;
 }
 
 .trial-footer {

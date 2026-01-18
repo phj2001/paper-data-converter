@@ -29,7 +29,12 @@ def _load_database_url() -> str:
 DATABASE_URL = _load_database_url()
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+SessionLocal = sessionmaker(
+    bind=engine,
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False
+)
 Base = declarative_base()
 
 

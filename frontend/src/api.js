@@ -3,6 +3,7 @@
  */
 
 const API_BASE = '/api'
+const LOCAL_LLM_CONFIG_KEY = 'paper-tool-llm-config'
 
 /**
  * 安全解析 JSON 响应
@@ -14,6 +15,35 @@ async function safeParseJson(response) {
   }
   const text = await response.text()
   return { detail: text }
+}
+
+export function loadLocalLLMConfig() {
+  try {
+    const raw = localStorage.getItem(LOCAL_LLM_CONFIG_KEY)
+    if (!raw) return null
+    return JSON.parse(raw)
+  } catch (error) {
+    console.error('读取本地模型配置失败:', error)
+    return null
+  }
+}
+
+export function saveLocalLLMConfig(config) {
+  localStorage.setItem(LOCAL_LLM_CONFIG_KEY, JSON.stringify(config))
+}
+
+export function getRuntimeLLMConfig() {
+  const config = loadLocalLLMConfig()
+  if (!config) return null
+  return {
+    provider: config.provider,
+    model: config.model,
+    api_key: config.api_key,
+    base_url: config.base_url || '',
+    temperature: Number(config.temperature ?? 0.01),
+    max_tokens: Number(config.max_tokens ?? 4096),
+    timeout: Number(config.timeout ?? 180)
+  }
 }
 
 /**
@@ -41,9 +71,26 @@ export async function uploadFiles(files) {
 /**
  * 试运行：上传单张图片
  */
-export async function runTrial(file) {
+export async function runTrial(file, llmConfig = null, options = {}) {
   const formData = new FormData()
   formData.append('file', file)
+  if (options.feedback_text) {
+    formData.append('feedback_text', options.feedback_text)
+  }
+  if (options.base_profile_id) {
+    formData.append('base_profile_id', options.base_profile_id)
+  }
+  if (llmConfig) {
+    formData.append('provider', llmConfig.provider || '')
+    formData.append('model', llmConfig.model || '')
+    formData.append('api_key', llmConfig.api_key || '')
+    if (llmConfig.base_url) {
+      formData.append('base_url', llmConfig.base_url)
+    }
+    formData.append('temperature', String(llmConfig.temperature ?? 0.01))
+    formData.append('max_tokens', String(llmConfig.max_tokens ?? 4096))
+    formData.append('timeout', String(llmConfig.timeout ?? 180))
+  }
 
   const response = await fetch(`${API_BASE}/trial/run`, {
     method: 'POST',

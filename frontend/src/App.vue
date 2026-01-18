@@ -109,7 +109,7 @@ import ProcessProgress from './components/ProcessProgress.vue'
 import CompletionView from './components/CompletionView.vue'
 import LLMConfig from './components/LLMConfig.vue'
 import TrialRun from './components/TrialRun.vue'
-import { uploadFiles, startProcess, getStatus } from './api'
+import { uploadFiles, startProcess, getStatus, getRuntimeLLMConfig } from './api'
 
 // 步骤定义
 const steps = ['上传文件', '配置列', '处理中', '完成']
@@ -155,9 +155,18 @@ const handleUpload = async (files) => {
 }
 
 // 处理列配置
+  // 校验模型配置
 const handleConfigure = async (payload) => {
   const headers = Array.isArray(payload) ? payload : payload.headers
   const useTrialProfile = !Array.isArray(payload) && payload.useTrialProfile
+  const llmConfig = getRuntimeLLMConfig()
+
+  if (!llmConfig || !llmConfig.provider || !llmConfig.model || !llmConfig.api_key) {
+    alert('请先在模型配置中填写 API Key')
+    showConfig.value = true
+    return
+  }
+
   isProcessing.value = true
   currentStep.value = 2
 
@@ -168,7 +177,8 @@ const handleConfigure = async (payload) => {
         headers: headers,
         column_count: headers.length
       },
-      prompt_profile_id: useTrialProfile ? trialProfileId.value : null
+      prompt_profile_id: useTrialProfile ? trialProfileId.value : null,
+      llm_config: llmConfig
     })
 
     // 开始轮询状态
@@ -180,7 +190,6 @@ const handleConfigure = async (payload) => {
   }
 }
 
-// 轮询任务状态
 const pollStatus = async () => {
   let isPolling = true
 

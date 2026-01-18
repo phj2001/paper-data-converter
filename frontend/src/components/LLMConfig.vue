@@ -150,7 +150,7 @@
             <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/>
             <path d="M8 5v3M8 10.5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
-          <span>配置将自动保存，支持 OpenAI、Claude、豆包、通义千问、智谱AI 等主流模型</span>
+          <span>配置仅保存在本地浏览器，不会上传到服务器</span>
         </div>
       </div>
 
@@ -166,7 +166,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
-import { getProviders, getCurrentConfig, updateConfig } from '../api'
+import { getProviders, getCurrentConfig, loadLocalLLMConfig, saveLocalLLMConfig } from '../api'
 
 const emit = defineEmits(['close', 'saved'])
 
@@ -224,31 +224,48 @@ const loadProviders = async () => {
 }
 
 // 加载当前配置
+  // 优先使用本地浏览器配置
 const loadCurrentConfig = async () => {
+  const localConfig = loadLocalLLMConfig()
+  if (localConfig) {
+    config.provider = localConfig.provider || 'doubao'
+    config.model = localConfig.model || ''
+    config.api_key = localConfig.api_key || ''
+    config.base_url = localConfig.base_url || ''
+    config.temperature = localConfig.temperature ?? 0.01
+    config.max_tokens = localConfig.max_tokens ?? 4096
+    config.timeout = localConfig.timeout ?? 180
+
+    hasApiKey.value = Boolean(localConfig.api_key)
+    originalApiKey.value = localConfig.api_key || ''
+
+    await nextTick()
+    const providerModels = availableModels.value || []
+    if (providerModels.length > 0 && config.model && !providerModels.includes(config.model)) {
+      useCustomModel.value = true
+    } else {
+      useCustomModel.value = false
+    }
+    return
+  }
+
   try {
     const data = await getCurrentConfig()
 
     // 逐个赋值确保 reactive 对象正确更新
     config.provider = data.provider || 'doubao'
     config.model = data.model || ''
-    config.api_key = data.api_key || ''
+    config.api_key = ''
     config.base_url = data.base_url || ''
     config.temperature = data.temperature ?? 0.01
     config.max_tokens = data.max_tokens ?? 4096
     config.timeout = data.timeout ?? 180
 
-    console.log('当前配置:', config)
-    console.log('配置提供商:', config.provider)
-    console.log('配置模型:', config.model)
+    hasApiKey.value = false
+    originalApiKey.value = ''
 
-    // 保存原始API key状态
-    hasApiKey.value = data.has_api_key || false
-    originalApiKey.value = data.api_key || ''
-
-    // 等待 providers 加载完成后再判断是否使用自定义模型
     await nextTick()
     const providerModels = availableModels.value || []
-    // 如果当前模型不在预定义列表中，且不是使用 endpoint_id 的情况，自动勾选自定义输入
     if (providerModels.length > 0 && config.model && !providerModels.includes(config.model)) {
       useCustomModel.value = true
     } else {
@@ -259,7 +276,6 @@ const loadCurrentConfig = async () => {
   }
 }
 
-// 计算下拉框位置
 const calculateDropdownPosition = (event) => {
   const trigger = event.target.closest('.select-trigger')
   if (!trigger) return null
@@ -326,7 +342,8 @@ const selectModel = (model) => {
 }
 
 // 保存配置
-const saveConfig = async () => {
+  // 保存配置
+  const saveConfig = async () => {
   if (!config.provider) {
     alert('请选择模型提供商')
     return
@@ -336,17 +353,15 @@ const saveConfig = async () => {
     return
   }
 
-  // 准备要保存的配置数据
   const configToSave = { ...config }
 
   // 处理API Key：
-  // 1. 如果用户输入了新的API key，使用新的
-  // 2. 如果用户没有输入（为空），但原始有API key，则保持原key不变
-  // 3. 如果原始也没有API key，则报错
+  // 1. 如果用户输入了新的 API key，使用新的
+  // 2. 如果用户没有输入（为空），但原始有 API key，则保持原 key 不变
+  // 3. 如果原始也没有 API key，则报错
   if (!configToSave.api_key) {
-    if (hasApiKey.value) {
-      // 用户没有修改API key，保持原值
-      configToSave.keep_api_key = true
+    if (originalApiKey.value) {
+      configToSave.api_key = originalApiKey.value
     } else {
       alert('请输入 API Key')
       return
@@ -355,11 +370,10 @@ const saveConfig = async () => {
 
   isSaving.value = true
   try {
-    await updateConfig(configToSave)
-    alert('配置保存成功！')
-
-    // 保存成功后，重新加载配置以确保前端显示与后端一致
-    await loadCurrentConfig()
+    saveLocalLLMConfig(configToSave)
+    hasApiKey.value = true
+    originalApiKey.value = configToSave.api_key
+    alert('配置已保存到本地浏览器')
 
     emit('saved')
     emit('close')
