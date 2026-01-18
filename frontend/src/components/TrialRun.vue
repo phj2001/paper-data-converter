@@ -143,8 +143,8 @@ const updateResult = (data, isFirst = false) => {
   }
 }
 
-const startStatusFlow = () => {
-  statusMessage.value = '正在上传图片...'
+const startStatusFlow = (initialMessage = '??????...') => {
+  statusMessage.value = initialMessage
   elapsedSeconds.value = 0
   statusTimers.push(setTimeout(() => {
     statusMessage.value = '正在分析表格结构...'
