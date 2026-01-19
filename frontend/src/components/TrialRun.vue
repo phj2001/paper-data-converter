@@ -1,5 +1,5 @@
 <template>
-  <div class="trial-run" @click.self="$emit('close')">
+  <div class="trial-run" @click.self="handleBackdropClose">
     <div class="trial-card">
       <div class="trial-header">
         <div class="trial-title">
@@ -96,6 +96,11 @@
               rows="4"
             ></textarea>
           </div>
+          <p v-if="isRunning" class="run-status">
+            <span class="run-dot"></span>
+            <span>{{ statusMessage }}</span>
+            <span class="run-time">??? {{ elapsedSeconds }}s</span>
+          </p>
         </div>
       </div>
 
@@ -143,7 +148,7 @@ const updateResult = (data, isFirst = false) => {
   }
 }
 
-const startStatusFlow = (initialMessage = '??????...') => {
+const startStatusFlow = (initialMessage = '正在上传图片...') => {
   statusMessage.value = initialMessage
   elapsedSeconds.value = 0
   statusTimers.push(setTimeout(() => {
@@ -223,7 +228,7 @@ const refineTrial = async () => {
   }
 
   isRunning.value = true
-  startStatusFlow()
+  startStatusFlow('正在根据反馈优化...')
   try {
     const data = await runTrial(selectedFile.value, llmConfig, {
       feedback_text: feedback,
@@ -279,6 +284,11 @@ const formatSize = (bytes) => {
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
+const handleBackdropClose = () => {
+  if (isRunning.value) return
+  emit('close')
 }
 </script>
 
