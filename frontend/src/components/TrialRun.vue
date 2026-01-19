@@ -99,7 +99,7 @@
           <p v-if="isRunning" class="run-status">
             <span class="run-dot"></span>
             <span>{{ statusMessage }}</span>
-            <span class="run-time">??? {{ elapsedSeconds }}s</span>
+            <span class="run-time">已运行 {{ elapsedSeconds }}s</span>
           </p>
         </div>
       </div>
